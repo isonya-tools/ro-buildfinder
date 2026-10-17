@@ -424,8 +424,33 @@ export async function search(opt) {
 	onProgress("候補を調べています", 0);
 	const L = Object.fromEntries(BF_REGIONS.map((r) => {
 		const x = lock[r.key] || {};
-		return [r.key, { item: !!(x.item || x.card || x.ench), refine: !!x.refine, card: !!x.card, ench: !!x.ench }];
+		return [r.key, { item: !!x.item, refine: !!x.refine, card: !!x.card, ench: !!x.ench }];
 	}));
+	// カード・エンチャントだけ固定した部位は、装備を入れ替えても今のカード・エンチャントをそのまま付ける
+	// （カードは枠が足りる装備、エンチャントはその枠に同じものが付く装備だけ）。keepSlots: 部位 → [[枠, ID, カードか]]
+	const keepSlots = new Map();
+	for (const r of BF_REGIONS) {
+		if (L[r.key].item || !(L[r.key].card || L[r.key].ench) || isRegionEmpty(base, r)) continue;
+		const n = itemSlotCount(regionItem(base, r));
+		const list = [];
+		r.slots.forEach((slot, i) => {
+			const cid = slot >= 0 ? base.card[slot] || 0 : 0;
+			if (cid > 0 && (i < n ? L[r.key].card : L[r.key].ench)) list.push([slot, cid, i < n, i]);
+		});
+		if (list.length) keepSlots.set(r.key, list);
+	}
+	const keepOk = (r, iid, lv) => {
+		const list = keepSlots.get(r.key);
+		if (!list) return true;
+		const n = itemSlotCount(iid);
+		const detail = enchantDetailOf(iid);
+		return list.every(([, cid, isCard, i]) => isCard ? i < n : i >= n && detail[i]?.has(cid) && detail[i].get(cid) <= lv);
+	};
+	/** 装備を置く（固定したカード・エンチャントは残す） */
+	const place = (m, r, iid, lv) => {
+		placeItem(m, r, iid, lv);
+		for (const [slot, cid] of keepSlots.get(r.key) || []) m.card[slot] = cid;
+	};
 	const keepItem = BF_REGIONS.filter((r) => L[r.key].item).map((r) => r.key);
 	const regions = BF_REGIONS.filter((r) => !(L[r.key].item && L[r.key].card && L[r.key].ench));
 	const kindsOf = (r) => r.key === "weapon" ? WEAPON_KINDS : r.kinds;
@@ -465,8 +490,9 @@ export async function search(opt) {
 		const detail = enchantDetailOf(iid);
 		const ench = enchOf(iid).map((a, s) => a.filter((cid) => (detail[s].get(cid) ?? 0) <= lv));
 		const out = [];
+		const kept = new Set((keepSlots.get(ctx.r.key) || []).map((x) => x[0]));
 		for (let s = 0; s < 4; s++) {
-			if (ctx.r.slots[s] == null || ctx.r.slots[s] < 0) { out.push([]); continue; }
+			if (ctx.r.slots[s] == null || ctx.r.slots[s] < 0 || kept.has(ctx.r.slots[s])) { out.push([]); continue; }
 			if (s < nSlot) { out.push(ctx.cardOpts); continue; }
 			const opts = [];
 			for (const cid of ench[s] || []) {
@@ -562,16 +588,18 @@ export async function search(opt) {
 			if (iid === curItem) continue;
 			// 精錬値は+0が基本。過剰精錬で目標の効果が変わるとき・エンチャントに精錬値の条件があるときだけ、その精錬値も候補にする。
 			// 装備自体に目標の効果が無い（エンチャントやカード枠のために入れた）ものは計算せず、部位を空にしたときと同じとみなす
+			const hasKeep = keepSlots.has(r.key);
 			const selfRel = rel.item(iid);
 			const levels = L[r.key].refine ? [getRefine(base, r)]
 				: selfRel ? refineLevelsOf(r, iid, rel.code)
 				: [...new Set([0, ...enchantDetailOf(iid).flatMap((mm) => [...mm.values()])])].filter((v) => v <= 20 && r.refine || v === 0).sort((a, b) => a - b);
 			let prevD = null, prevEnch = -1;
 			for (const lv of levels) {
+				if (!keepOk(r, iid, lv)) continue;
 				let d = clearedD;
-				if (selfRel) {
+				if (selfRel || hasKeep) {
 					const m = cloneModel(cleared);
-					placeItem(m, r, iid, lv);
+					place(m, r, iid, lv);
 					d = vecFrom(evalM(m, skRef(relSk?.item(iid), clearedVal)), baseVal);
 				}
 				const slotChoices = await slotChoicesFor(ctx, iid, lv);
@@ -617,20 +645,22 @@ export async function search(opt) {
 		const wpn = assign.find((a) => a.region.key === "weapon" && !a.already);
 		if (wpn && isTwoHanded(wpn.itemId) && (assign.some((a) => a.region.key === "shield") || (shieldLocked && baseShield))) continue;
 		// セットのメンバーも+0から。効果が出なければ、各メンバーを候補の中で一番高い精錬値にして確かめる
-		let d = null;
+		let d = null, bad = false;
 		for (const top of [false, true]) {
 			const m = cloneModel(base);
 			for (const a of assign) {
 				if (a.already) continue;
 				const lvs = L[a.region.key].refine ? [getRefine(base, a.region)] : refineLevelsOf(a.region, a.itemId);
 				a.refine = top ? lvs[lvs.length - 1] : lvs[0];
-				placeItem(m, a.region, a.itemId, a.refine);
+				if (!keepOk(a.region, a.itemId, a.refine)) { bad = true; break; }
+				place(m, a.region, a.itemId, a.refine);
 			}
+			if (bad) break;
 			d = vecFrom(evalM(m), baseVal);
 			if (relevant(d)) break;
 			if (!assign.some((a) => !a.already && refineLevelsOf(a.region, a.itemId).length > 1)) break;
 		}
-		if (!relevant(d)) continue;
+		if (bad || !relevant(d)) continue;
 		const inDfs = assign.filter((a) => regionIndex.has(a.region.key)).sort((a, b) => regionIndex.get(a.region.key) - regionIndex.get(b.region.key));
 		const pkg = { id: S.setIndex, src: S.src, regions: inDfs.map((a) => regionIndex.get(a.region.key)), members: S.members };
 		for (let k = 0; k < inDfs.length; k++) {
@@ -699,7 +729,7 @@ export async function search(opt) {
 		for (const v of picks) {
 			if (!v.changed) continue;
 			const r = v.region;
-			if (!v.keep) placeItem(m, r, v.itemId, v.refine ?? 0);
+			if (!v.keep) place(m, r, v.itemId, v.refine ?? 0);
 			for (const [slot, cid] of v.cards) m.card[slot] = cid;
 		}
 		// 同じ部位の中でエンチャントの並び順だけ違うもの・アクセサリーの左右が入れ替わっただけのものは同じ構成とみなす
@@ -881,11 +911,8 @@ function within(a, b) {
 
 /** 条件に関係する指標だけで比べ、他より全面的に劣る組を捨てる（値段・個数も比べる） */
 function paretoPrune(list, need) {
-	// 比べるのは件数の2乗の手間なので、多すぎるときは先に目標への近さの上位に絞る（安いものも少し残す）
-	if (list.length > PRUNE_INPUT_MAX) {
-		const cheap = list.slice().sort((a, b) => a.price - b.price).slice(0, 300);
-		list = [...new Set([...cheap, ...topByProgress(list, need, PRUNE_INPUT_MAX - 300)])];
-	}
+	// 比べるのは件数の2乗の手間なので、多すぎるときは先に目標への効き目の上位に絞る（値段では切らない）
+	if (list.length > PRUNE_INPUT_MAX) list = topByProgress(list, need, PRUNE_INPUT_MAX);
 	const idx = need.map((n, i) => i).filter((i) => need[i] > 0);
 	const cap = (v, i) => Math.min(v.d[i], need[i]);
 	// 中身: 効果を出している物（カード・エンチャントと、装備自体に効果があるならその装備）。

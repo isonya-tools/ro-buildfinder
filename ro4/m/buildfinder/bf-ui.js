@@ -581,8 +581,6 @@ function renderRegions(model) {
 			card: names(ids.slice(0, nSlot)),
 			ench: names(ids.slice(nSlot)),
 		};
-		// カードかエンチャントを固定したら、それが付いている装備も固定になる
-		const itemForced = !!(lk.card || lk.ench);
 		// 部位の固定 = 装備・精錬値・カード・エンチャントを全部固定
 		const allOn = LOCK_PARTS.every(([p]) => p === "refine" && !r.refine ? true : lk[p]);
 		const regionBtn = h("button", { type: "button", class: "bf-lock" + (allOn ? " on" : ""), onclick: () => {
@@ -591,9 +589,8 @@ function renderRegions(model) {
 		} }, allOn ? "固定中" : "固定");
 		regionBox.append(h("tr", {}, h("td", { class: "bf-lockcell" + (allOn ? " bf-locked" : "") }, regionBtn, h("span", { class: "bf-lockval" }, r.label)), LOCK_PARTS.map(([part]) => {
 			if (part === "refine" && !r.refine) return h("td", { class: "bf-dim" }, "-");
-			const on = !!lk[part] || (part === "item" && itemForced);
-			const btn = h("button", { type: "button", class: "bf-lock" + (on ? " on" : ""), disabled: part === "item" && itemForced,
-				title: part === "item" && itemForced ? "カードかエンチャントを固定しているので装備も固定です" : "",
+			const on = !!lk[part];
+			const btn = h("button", { type: "button", class: "bf-lock" + (on ? " on" : ""),
 				onclick: () => {
 					const x = { ...(conf.regionLock[r.key] || {}) };
 					if (x[part]) delete x[part]; else x[part] = true;
