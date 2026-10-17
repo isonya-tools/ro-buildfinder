@@ -4,12 +4,13 @@
 	<meta http-equiv="Content-type" content="text/html; charset=UTF-8">
 	<meta name="description" content="オンラインゲーム「Ragnarok Online」のステータス計算機の避難所の避難所">
 
-	<title>ROラトリオHub</title>
+	<title>RO BuildFinder</title>
 
 
 	<link rel="stylesheet" href="../../assets/calcx-legacy.css" type="text/css">
 	<link rel="stylesheet" href="../../assets/calcx-chrome.css" type="text/css">
 	<link rel="stylesheet" href="../../assets/common.css" type="text/css">
+	<link rel="stylesheet" href="buildfinder/bf.css" type="text/css">
 
 	<!-- エンジンエントリの import 深部（3〜4階層）にある巨大データファイル。
 	     単一エントリ化で発見が遅れる分を先読みで取り戻す -->
@@ -1260,7 +1261,9 @@
 						</tbody>
 					</table>
 					<br>
-					<!-- 攻撃 -->
+					<!-- 装備シミュレーター -->
+					<div id="BF_ROOT"></div>
+					<!-- 攻撃（装備シミュでは非表示。セーブデータ互換のため要素は残す） -->
 					<section id="combatResult">
 					<!-- 攻撃設定部 -->
 					<div id="OBJID_ATTACK_BLOCK_MIG">
@@ -1809,5 +1812,6 @@
 <!-- 左メニュー用 javascript ファイル -->
 <script type="module" src="../../engine/entry/calcx.js"></script>
 <script type="module" src="../../assets/frame.js"></script>
+<script type="module" src="buildfinder/bf-main.js"></script>
 
 </html>

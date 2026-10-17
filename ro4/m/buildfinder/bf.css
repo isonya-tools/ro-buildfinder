@@ -1,0 +1,52 @@
+/* RO BuildFinder */
+#combatResult, #OBJID_DIV_BATTLE_RESULT_TINY { display: none !important; }
+
+#BF_ROOT { margin: 16px 0 24px; padding: 12px 16px; border: 2px solid #6b7fd7; background: #f7f8ff; color: #222; max-width: 1200px; font-size: 14px; }
+#BF_ROOT h2.bf-title { margin: 0 0 4px; font-size: 20px; color: #2c3e9e; }
+#BF_ROOT .bf-lead, #BF_ROOT .bf-note { margin: 0 0 8px; color: #555; font-size: 13px; }
+#BF_ROOT .bf-sec { margin: 12px 0; padding-top: 8px; border-top: 1px solid #c9cff0; }
+#BF_ROOT .bf-sec h3, #BF_ROOT .bf-res-head h3 { margin: 0 0 8px; font-size: 16px; }
+#BF_ROOT .bf-zero { color: #999; }
+#BF_ROOT .bf-bad { outline: 2px solid #d33; }
+#BF_ROOT button { cursor: pointer; }
+
+#BF_ROOT .bf-skill { margin-bottom: 8px; }
+#BF_ROOT .bf-metrics { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: flex-start; }
+#BF_ROOT .bf-mgroup table { border-collapse: collapse; }
+#BF_ROOT .bf-mgroup th { text-align: left; font-weight: normal; padding: 1px 10px 1px 0; white-space: nowrap; }
+#BF_ROOT .bf-mgroup td { text-align: right; padding: 1px 0; white-space: nowrap; }
+#BF_ROOT .bf-mgroup-title { font-weight: bold; color: #2c3e9e; margin-bottom: 2px; }
+#BF_ROOT .bf-cards { margin-top: 8px; }
+#BF_ROOT .bf-cards ul { margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 8px; }
+#BF_ROOT .bf-cards li { background: #fff; border: 1px solid #ccd; padding: 1px 6px; }
+
+#BF_ROOT .bf-cond { margin: 4px 0; }
+#BF_ROOT .bf-x { margin-left: 6px; border: none; background: none; color: #c33; }
+#BF_ROOT .bf-regions { border-collapse: collapse; }
+#BF_ROOT .bf-regions th, #BF_ROOT .bf-regions td { border: 1px solid #ccd; padding: 2px 8px; text-align: left; }
+#BF_ROOT .bf-regions th { background: #e6e9fb; }
+#BF_ROOT .bf-ng-list { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
+#BF_ROOT .bf-chip { background: #fde8e8; border: 1px solid #e3a3a3; padding: 1px 4px 1px 8px; }
+#BF_ROOT .bf-chip button { border: none; background: none; color: #c33; }
+
+#BF_ROOT .bf-opts { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-bottom: 8px; }
+#BF_ROOT .bf-actions button { font-size: 16px; padding: 4px 24px; margin-right: 8px; }
+#BF_ROOT .bf-go { background: #2c3e9e; color: #fff; border: 1px solid #2c3e9e; }
+#BF_ROOT .bf-go:disabled { opacity: .5; }
+#BF_ROOT .bf-progress { margin-top: 6px; min-height: 1.4em; color: #333; }
+
+#BF_ROOT .bf-res-head { display: flex; align-items: center; gap: 12px; margin-top: 12px; border-top: 1px solid #c9cff0; padding-top: 8px; }
+#BF_ROOT .bf-res-head h3 { margin: 0; }
+#BF_ROOT .bf-res-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; margin-top: 8px; }
+#BF_ROOT .bf-res { background: #fff; border: 1px solid #b8bfe6; padding: 8px; }
+#BF_ROOT .bf-res-top { display: flex; gap: 10px; align-items: baseline; border-bottom: 1px solid #e3e6f7; padding-bottom: 4px; margin-bottom: 4px; }
+#BF_ROOT .bf-res-no { font-weight: bold; color: #2c3e9e; }
+#BF_ROOT .bf-res-price { margin-left: auto; font-weight: bold; }
+#BF_ROOT .bf-res-vals th { text-align: left; font-weight: normal; padding-right: 8px; color: #555; }
+#BF_ROOT .bf-res-picks { margin: 6px 0 0; padding: 0; list-style: none; }
+#BF_ROOT .bf-res-picks li { padding: 2px 0; border-top: 1px dashed #e3e6f7; }
+#BF_ROOT .bf-res-region { display: inline-block; min-width: 5.5em; color: #555; }
+#BF_ROOT .bf-res-item { font-weight: bold; }
+#BF_ROOT .bf-res-cards { color: #333; }
+#BF_ROOT .bf-res-pprice { float: right; color: #555; }
+#BF_ROOT .bf-license { margin: 16px 0 0; font-size: 12px; color: #666; border-top: 1px solid #c9cff0; padding-top: 8px; }

@@ -16,7 +16,7 @@ import { IsMatchJobRestrict } from "../../../engine/data/mig.job.h.js";
 import { g_constDataManager } from "../../../engine/runtime/global.js";
 import { CONST_DATA_KIND_ENCHANT_LIST, CONST_DATA_KIND_JOB } from "../../../engine/const/EnumConstDataKind.js";
 import { SkillObjNew } from "../../../engine/skill/skill.dat.js";
-import { SKILL_DATA_INDEX_NAME } from "../../../engine/const/EnumSkillDataIndex.js";
+import { SKILL_DATA_INDEX_NAME, SKILL_DATA_INDEX_MAXLV } from "../../../engine/const/EnumSkillDataIndex.js";
 import { RebuildCardSelectSubCollectEnchListData } from "../../../engine/equip/hmcard.js";
 import * as R from "../../../engine/const/EnumEquipRegionId.js";
 import * as K from "../../../engine/const/EnumItemKind.js";
@@ -72,11 +72,11 @@ export function evalModel(model, withBattle = false) {
 	return readMetrics(r);
 }
 
-/** 職業の攻撃スキル一覧 [[skillId, 名前], ...] */
+/** 職業の攻撃スキル一覧 [[skillId, 名前, 最大Lv], ...] */
 export function attackSkillsOf(jobId) {
 	const job = g_constDataManager.GetDataObject(CONST_DATA_KIND_JOB, jobId);
 	const ids = job?.GetAttackSkillIdArray?.() ?? [];
-	return ids.map((id) => [id, SkillObjNew[id]?.[SKILL_DATA_INDEX_NAME] ?? String(id)]).filter(([, n]) => n);
+	return ids.map((id) => [id, SkillObjNew[id]?.[SKILL_DATA_INDEX_NAME] ?? String(id), Number(SkillObjNew[id]?.[SKILL_DATA_INDEX_MAXLV] ?? 1)]).filter(([, n]) => n);
 }
 
 /** その部位が空き（装備なし）か */
@@ -408,10 +408,15 @@ function paretoPrune(list, need) {
 			const kc = k.count ?? k.cards.length, vc = v.count ?? v.cards.length;
 			if (kc > vc) continue;
 			if ((k.changed ?? 0) > (v.changed ?? 0)) continue;
-			let dominated = true;
-			for (const i of idx) if (cap(k, i) < cap(v, i) - 1e-9) { dominated = false; break; }
+			let dominated = true, strict = k.price < v.price || kc < vc || (k.changed ?? 0) < (v.changed ?? 0);
+			for (const i of idx) {
+				if (cap(k, i) < cap(v, i) - 1e-9) { dominated = false; break; }
+				if (cap(k, i) > cap(v, i) + 1e-9) strict = true;
+			}
 			if (dominated) for (const h of v.hits) if (!k.hits.has(h)) { dominated = false; break; }
-			if (dominated) continue outer;
+			if (dominated && k.hits.size > v.hits.size) strict = true;
+			// 全く同じ条件のものは別の候補として残す（並べて比べられるように）
+			if (dominated && strict) continue outer;
 		}
 		kept.push(v);
 	}
