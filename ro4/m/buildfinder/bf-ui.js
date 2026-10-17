@@ -195,7 +195,16 @@ export async function initBuildFinder(container) {
 		clearTimeout(timer);
 		timer = setTimeout(refreshAll, 400);
 	});
+	// セーブデータの読み込みなど、change が起きずに職業・装備が変わることがあるので、1秒ごとに見比べて変わっていたら作り直す
+	setInterval(() => {
+		if (running) return;
+		let sig;
+		try { const m = modelFromScreen(); sig = JSON.stringify([m.status.jobId, m.equip, m.card]); } catch { return; }
+		if (lastSig !== null && sig !== lastSig) refreshAll();
+		lastSig = sig;
+	}, 1000);
 }
+let lastSig = null;
 
 function section(title, body) {
 	return h("section", { class: "bf-sec" }, h("h3", {}, title), body);
@@ -215,6 +224,7 @@ function refreshAll() {
 	let model;
 	try { model = modelFromScreen(); } catch { stateBox.textContent = "計算の準備中です"; return; }
 	lastModel = model;
+	lastSig = JSON.stringify([model.status.jobId, model.equip, model.card]);
 	renderState(model);
 	renderEnch(model);
 	renderBuffs(model);
