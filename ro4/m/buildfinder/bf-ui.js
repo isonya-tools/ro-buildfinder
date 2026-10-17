@@ -51,6 +51,8 @@ const defaultConf = () => ({
 	buffOn: {}, // 発動バフ（時限効果ID → オン）。載っていないものはオフ
 	enchRows: null,   // [[エンチャントID, 目標の個数 or null]]（null なら今付いているものを入れる）
 	enchRemoved: [],  // 一覧から外したエンチャント（今付いていても自動では入れ直さない）
+	cardGoalRows: null, // [[カードID, 目標の枚数 or null]]（エンチャントと同じ仕組み）
+	cardGoalRemoved: [],
 	regionLock: {},   // regionKey -> {item, refine, card, ench}（true のものだけ固定。ほかは自由）
 	ngItems: [], ngCards: [],
 	maxResults: 30, sort: "changes",
@@ -91,6 +93,8 @@ function itemNames() {
 }
 const cardNames = () => cardNameList || (cardNameList = allCardNames());
 const enchNames = () => enchNameList || (enchNameList = allEnchantNames());
+let cardGoalNameList = null;
+const cardGoalNames = () => cardGoalNameList || (cardGoalNameList = cardNames().filter(([id]) => !isEnchant(id)));
 
 // ---- スキルの説明（公式ツールの内容） ----
 let skillInfo = null;
@@ -117,14 +121,14 @@ function showTip(e, content) {
 function hideTip() { if (tip) tip.style.display = "none"; }
 
 // ---- 画面 ----
-let progressBar, root, timeBox, stateBox, enchBox, skillBox, regionBox, ngBox, progressBox, resultBox, searchBtn, stopBtn;
+let progressBar, root, timeBox, stateBox, enchBox, cardBox, skillBox, regionBox, ngBox, progressBox, resultBox, searchBtn, stopBtn;
 let lastResults = null, stopFlag = false, running = false, prices = null, lastModel = null, skillList = [];
 
 export async function initBuildFinder(container) {
 	loadConf();
 	root = container;
 	root.append(
-		section("今の状態と目標", h("div", {}, stateBox = h("div", { class: "bf-state" }), h("div", { class: "bf-enchrows" }, enchBox = h("div", {}), timeBox = h("div", {})))),
+		section("今の状態と目標", h("div", {}, stateBox = h("div", { class: "bf-state" }), h("div", { class: "bf-enchrows" }, enchBox = h("div", {}), cardBox = h("div", {}), timeBox = h("div", {})))),
 		section("スキル", skillBox = h("div", { class: "bf-skills" })),
 		section("部位ごとの設定", regionBox = h("table", { class: "bf-regions" })),
 		section("除外装備", buildNg()),
@@ -236,55 +240,63 @@ function renderState(model) {
 	stateBox.replaceChildren(metricGroupsTable(evalModel(model), { withTarget: true }));
 }
 
-// ---- エンチャント ----
-function currentEnchCounts(model) {
+// ---- エンチャント・カードの目標（プルダウンで選んで個数を入れる。今付いているものは最初から一覧に入れる） ----
+const GOAL_KINDS = {
+	ench: { rows: "enchRows", removed: "enchRemoved", title: "エンチャント", head: "目標の個数", place: "エンチャントを追加（名前を入力）", is: (cid) => isEnchant(cid), names: () => enchNames(), box: () => enchBox },
+	card: { rows: "cardGoalRows", removed: "cardGoalRemoved", title: "カード", head: "目標の枚数", place: "カードを追加（名前を入力）", is: (cid) => !isEnchant(cid), names: () => cardGoalNames(), box: () => cardBox },
+};
+const goalTs = { ench: [], card: [] };
+function currentCounts(model, g) {
 	const counts = new Map();
-	for (const cid of model.card) if (cid > 0 && isEnchant(cid)) counts.set(cid, (counts.get(cid) || 0) + 1);
+	for (const cid of model.card) if (cid > 0 && g.is(cid)) counts.set(cid, (counts.get(cid) || 0) + 1);
 	return counts;
 }
-const enchTs = [];
-function renderEnch(model) {
-	const counts = currentEnchCounts(model);
-	if (conf.enchRows == null) conf.enchRows = [];
-	conf.enchRows = conf.enchRows.filter(([cid]) => cid > 0 && isEnchant(cid));
-	// 今付いているエンチャントは一覧に入れておく（目標は空欄のまま）
-	for (const cid of counts.keys()) if (!conf.enchRows.some(([c]) => c === cid) && !conf.enchRemoved.includes(cid)) conf.enchRows.push([cid, null]);
+function renderEnch(model) { renderGoals(model, "ench"); renderGoals(model, "card"); }
+function renderGoals(model, kind) {
+	const g = GOAL_KINDS[kind];
+	const counts = currentCounts(model, g);
+	if (!Array.isArray(conf[g.rows])) conf[g.rows] = [];
+	if (!Array.isArray(conf[g.removed])) conf[g.removed] = [];
+	conf[g.rows] = conf[g.rows].filter(([cid]) => cid > 0 && g.is(cid));
+	// 今付いているものは一覧に入れておく（目標は空欄のまま）
+	for (const cid of counts.keys()) if (!conf[g.rows].some(([c]) => c === cid) && !conf[g.removed].includes(cid)) conf[g.rows].push([cid, null]);
 	saveConf();
 	// 選択中のプルダウンを閉じてから作り直す（フォーカス移動中の作り直しで落ちないように）
-	for (const ts of enchTs.splice(0)) try { ts.destroy(); } catch { /* 済み */ }
-	enchBox.replaceChildren(h("div", { class: "bf-mgroup bf-enchgroup" }, h("div", { class: "bf-mgroup-title" }, "エンチャント"),
+	for (const ts of goalTs[kind].splice(0)) try { ts.destroy(); } catch { /* 済み */ }
+	g.box().replaceChildren(h("div", { class: "bf-mgroup bf-enchgroup" }, h("div", { class: "bf-mgroup-title" }, g.title),
 		h("table", { class: "bf-cardtable" },
-			h("tr", { class: "bf-mhead" }, h("th", {}), h("th", {}, "今"), h("th", {}, "目標の個数"), h("th", {})),
-			conf.enchRows.map((row, i) => enchRow(row, i, counts)),
-			enchRow([0, null], conf.enchRows.length, counts))));
+			h("tr", { class: "bf-mhead" }, h("th", {}), h("th", {}, "今"), h("th", {}, g.head), h("th", {})),
+			conf[g.rows].map((row, i) => goalRow(kind, row, i, counts)),
+			goalRow(kind, [0, null], conf[g.rows].length, counts))));
 }
-function enchRow(row, i, counts) {
+function goalRow(kind, row, i, counts) {
+	const g = GOAL_KINDS[kind];
 	const [cid, n] = row;
 	const sel = h("select", { class: "bf-cardsel" }, h("option", { value: "" }, ""));
 	if (cid) sel.append(h("option", { value: cid, selected: true }, cardName(cid)));
-	const num = cid ? numInput(n, (v) => { conf.enchRows[i][1] = v == null ? null : Math.max(0, Math.floor(v)); saveConf(); }) : null;
+	const num = cid ? numInput(n, (v) => { conf[g.rows][i][1] = v == null ? null : Math.max(0, Math.floor(v)); saveConf(); }) : null;
 	const del = cid ? h("button", { type: "button", class: "bf-del", title: "一覧から外す", onclick: () => {
-		conf.enchRows.splice(i, 1);
-		if (!conf.enchRemoved.includes(cid)) conf.enchRemoved.push(cid);
-		saveConf(); renderEnch(lastModel);
+		conf[g.rows].splice(i, 1);
+		if (!conf[g.removed].includes(cid)) conf[g.removed].push(cid);
+		saveConf(); renderGoals(lastModel, kind);
 	} }, "外す") : null;
 	const cur = cid ? counts.get(cid) || 0 : null;
 	const tr = h("tr", {}, h("td", {}, sel), h("td", { class: cur ? "bf-cur" : "bf-cur bf-zero" }, cid ? String(cur) : ""), h("td", {}, num), h("td", {}, del));
 	queueMicrotask(() => {
 		if (!window.TomSelect) return;
 		const ts = new window.TomSelect(sel, {
-			options: enchNames().map(([id, name]) => ({ value: String(id), text: name })),
-			maxOptions: 200, placeholder: cid ? "" : "エンチャントを追加（名前を入力）", allowEmptyOption: true,
+			options: g.names().map(([id, name]) => ({ value: String(id), text: name })),
+			maxOptions: 200, placeholder: cid ? "" : g.place, allowEmptyOption: true,
 			onChange: (v) => {
 				const id = Number(v) || 0;
 				if (!id) return;
-				if (cid) conf.enchRows[i][0] = id; else conf.enchRows.push([id, null]);
-				conf.enchRemoved = conf.enchRemoved.filter((x) => x !== id);
+				if (cid) conf[g.rows][i][0] = id; else conf[g.rows].push([id, null]);
+				conf[g.removed] = conf[g.removed].filter((x) => x !== id);
 				saveConf();
-				setTimeout(() => renderEnch(lastModel), 0);
+				setTimeout(() => renderGoals(lastModel, kind), 0);
 			},
 		});
-		enchTs.push(ts);
+		goalTs[kind].push(ts);
 		if (cid) ts.setValue(String(cid), true);
 	});
 	return tr;
@@ -493,6 +505,9 @@ function buildConds() {
 	}
 	for (const [cid, n] of conf.enchRows || []) {
 		if (cid > 0 && n != null && n > 0) conds.push({ key: "card:" + cid, target: n, label: cardName(cid), unit: "個" });
+	}
+	for (const [cid, n] of conf.cardGoalRows || []) {
+		if (cid > 0 && n != null && n > 0) conds.push({ key: "card:" + cid, target: n, label: cardName(cid), unit: "枚" });
 	}
 	return { conds, skillLv };
 }
