@@ -15,15 +15,5 @@ function ready() {
 
 const box = document.getElementById("BF_ROOT");
 
-// サイドバーの表記を BuildFinder に（サイドバーは後から作られるので出るまで待つ）
-function rebrand(tries = 0) {
-	const logo = document.querySelector("#sidebar .sidebar-logo");
-	if (!logo) { if (tries < 50) setTimeout(() => rebrand(tries + 1), 200); return; }
-	const mark = logo.querySelector("div");
-	if (mark) mark.textContent = "BF";
-	const title = logo.querySelector("h5");
-	if (title) title.innerHTML = "RO BuildFinder<br>- 装備シミュレーター -";
-}
-
-const wait = () => (ready() ? (rebrand(), startDarkMode(), initBuildFinder(box)) : setTimeout(wait, 300));
+const wait = () => (ready() ? (startDarkMode(), initBuildFinder(box)) : setTimeout(wait, 300));
 wait();

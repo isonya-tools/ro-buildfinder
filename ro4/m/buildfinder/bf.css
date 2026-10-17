@@ -14,6 +14,10 @@
 }
 
 #combatResult, #OBJID_DIV_BATTLE_RESULT_TINY { display: none !important; }
+/* 左のメニュー（計算機・アイテム一覧など）は使わない */
+.wrapper > .side { display: none !important; }
+.bf-pagetitle { margin: 0 0 14px; font-size: 26px; color: var(--bf-accent); letter-spacing: .04em; font-weight: bold; }
+.bf-pagetitle span { font-size: 18px; color: var(--bf-text); font-weight: normal; margin-left: .3em; }
 
 /* ---- ページ全体 ---- */
 html, body { background: var(--bf-bg) !important; color: var(--bf-text) !important; color-scheme: dark; }
@@ -35,17 +39,27 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 *[style*="background-color: rgb(255, 255, 255)"], *[style*="background-color:#fff"], *[style*="background-color: white"] { background-color: var(--bf-panel) !important; }
 
 /* ---- 装備シミュ ---- */
-#BF_ROOT { margin: 16px 0 24px; padding: 14px 18px; border: 1px solid var(--bf-accent); background: var(--bf-panel); color: var(--bf-text); max-width: 1280px; font-size: 14px; }
+#BF_ROOT { margin: 16px 0 24px; padding: 14px 18px; border: 1px solid var(--bf-accent); background: var(--bf-panel); color: var(--bf-text); font-size: 14px; }
 #BF_ROOT h2.bf-title { margin: 0 0 4px; font-size: 22px; color: var(--bf-accent); letter-spacing: .05em; }
 #BF_ROOT .bf-lead, #BF_ROOT .bf-note { margin: 0 0 8px; color: var(--bf-dim); font-size: 13px; }
 #BF_ROOT .bf-sec { margin: 14px 0; padding: 10px 12px; border: 1px solid var(--bf-line); background: var(--bf-bg); }
 #BF_ROOT .bf-sec h3, #BF_ROOT .bf-res-head h3 { margin: 0 0 8px; font-size: 16px; color: var(--bf-accent); }
 #BF_ROOT .bf-zero { color: var(--bf-dim); }
-#BF_ROOT input[type=number].bf-target, #BF_ROOT .bf-count { width: 5.5em; text-align: right; }
+#BF_ROOT .bf-target { width: 5em; text-align: right; }
+#BF_ROOT select.bf-target { width: auto; text-align: left; }
+#BF_ROOT input[type=number]::-webkit-inner-spin-button, #BF_ROOT input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+#BF_ROOT input[type=number] { -moz-appearance: textfield; }
+#BF_ROOT .bf-numwrap { display: inline-flex; align-items: center; white-space: nowrap; }
+#BF_ROOT .bf-clear { border: none; background: none; color: var(--bf-dim); padding: 0 4px; font-size: 12px; line-height: 1; }
+#BF_ROOT .bf-clear:hover { color: var(--bf-ng); }
 
 /* 今の状態と目標 */
-#BF_ROOT .bf-metrics { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-start; }
-#BF_ROOT .bf-mgroup { background: var(--bf-panel); border: 1px solid var(--bf-line); padding: 6px 8px; }
+#BF_ROOT .bf-metrics { display: flex; flex-wrap: nowrap; gap: 10px 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 4px; }
+#BF_ROOT .bf-enchrows { margin-top: 10px; }
+#BF_ROOT .bf-enchgroup { display: inline-block; }
+#BF_ROOT .bf-del { border: 1px solid var(--bf-line); background: none; color: var(--bf-dim); font-size: 12px; padding: 0 6px; }
+#BF_ROOT .bf-del:hover { color: var(--bf-ng); }
+#BF_ROOT .bf-mgroup { background: var(--bf-panel); border: 1px solid var(--bf-line); padding: 6px 8px; flex: 0 0 auto; }
 #BF_ROOT .bf-mgroup table { border-collapse: collapse; }
 #BF_ROOT .bf-mgroup th { text-align: left; font-weight: normal; padding: 1px 10px 1px 0; white-space: nowrap; }
 #BF_ROOT .bf-mgroup td { text-align: right; padding: 1px 0 1px 6px; white-space: nowrap; }
@@ -96,17 +110,30 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 /* 結果 */
 #BF_ROOT .bf-res-head { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
 #BF_ROOT .bf-res-head h3 { margin: 0; }
-#BF_ROOT .bf-res-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); gap: 10px; margin-top: 8px; }
-#BF_ROOT .bf-res { background: var(--bf-bg); border: 1px solid var(--bf-line); padding: 8px; }
-#BF_ROOT .bf-res-top { display: flex; gap: 10px; align-items: baseline; border-bottom: 1px solid var(--bf-line); padding-bottom: 4px; margin-bottom: 4px; }
-#BF_ROOT .bf-res-no { font-weight: bold; color: var(--bf-accent); }
-#BF_ROOT .bf-res-price { margin-left: auto; font-weight: bold; color: var(--bf-accent); }
-#BF_ROOT .bf-res-vals th { text-align: left; font-weight: normal; padding-right: 8px; color: var(--bf-dim); }
-#BF_ROOT .bf-res-picks { margin: 6px 0 0; padding: 0; list-style: none; }
-#BF_ROOT .bf-res-picks li { padding: 2px 0; border-top: 1px dashed var(--bf-line); }
-#BF_ROOT .bf-res-region { display: inline-block; min-width: 5.5em; color: var(--bf-dim); }
-#BF_ROOT .bf-res-item { font-weight: bold; }
-#BF_ROOT .bf-res-pprice { float: right; color: var(--bf-dim); }
+#BF_ROOT .bf-res-list { margin-top: 8px; border-top: 1px solid var(--bf-line); }
+#BF_ROOT .bf-res { border-bottom: 1px solid var(--bf-line); }
+#BF_ROOT .bf-res-line { display: flex; align-items: baseline; gap: 14px; width: 100%; padding: 6px 8px; border: none; background: var(--bf-bg); color: var(--bf-text); text-align: left; font-size: 14px; }
+#BF_ROOT .bf-res-line:hover { background: var(--bf-panel2); }
+#BF_ROOT .bf-res.open > .bf-res-line { background: var(--bf-panel2); }
+#BF_ROOT .bf-res-line::before { content: "▶"; font-size: 10px; color: var(--bf-dim); }
+#BF_ROOT .bf-res.open > .bf-res-line::before { content: "▼"; }
+#BF_ROOT .bf-res-no { color: var(--bf-dim); min-width: 2.5em; }
+#BF_ROOT .bf-res-chg { min-width: 4em; white-space: nowrap; }
+#BF_ROOT .bf-res-price { min-width: 9em; text-align: right; white-space: nowrap; font-weight: bold; color: var(--bf-accent); }
+#BF_ROOT .bf-res-new { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--bf-accent2); }
+#BF_ROOT .bf-res-detail { display: none; padding: 8px 10px 14px 28px; background: var(--bf-panel); }
+#BF_ROOT .bf-res.open > .bf-res-detail { display: block; }
+#BF_ROOT .bf-res-actions { display: flex; align-items: center; gap: 14px; margin-bottom: 8px; }
+#BF_ROOT .bf-apply { padding: 3px 16px; }
+#BF_ROOT .bf-eqtable { border-collapse: collapse; margin-bottom: 10px; }
+#BF_ROOT .bf-eqtable th, #BF_ROOT .bf-eqtable td { border: 1px solid var(--bf-line); padding: 3px 8px; text-align: left; white-space: nowrap; }
+#BF_ROOT .bf-eqtable th { background: var(--bf-panel2); font-weight: normal; color: var(--bf-dim); }
+#BF_ROOT .bf-eqtable td.bf-hit { background: rgba(240, 168, 67, .18); color: #ffd28a; font-weight: bold; }
+#BF_ROOT .bf-ngbtn { margin-left: 8px; font-size: 11px; padding: 0 6px; border: 1px solid rgba(255, 122, 122, .5); background: none; color: var(--bf-ng); font-weight: normal; }
+#BF_ROOT .bf-set { margin-left: 6px; font-size: 11px; padding: 0 5px; border: 1px solid var(--bf-accent2); color: var(--bf-accent2); font-weight: normal; }
+#BF_ROOT tr.bf-changed .bf-cur:not(.bf-before) { font-weight: bold; }
+#BF_ROOT tr.bf-changed th { color: #ffd28a; }
+#BF_ROOT .bf-before { color: var(--bf-dim) !important; }
 #BF_ROOT .bf-license { margin: 16px 0 0; font-size: 12px; color: var(--bf-dim); border-top: 1px solid var(--bf-line); padding-top: 8px; }
 
 /* ツールチップ */

@@ -1,18 +1,19 @@
 /**
  * RO BuildFinder 画面.
- * 今の状態と目標、スキル、カード・エンチャ、部位ごとの設定、除外装備、検索と結果一覧を受け持つ。
+ * 今の状態と目標（エンチャントを含む）、スキル、部位ごとの設定、除外装備、検索と結果一覧を受け持つ。
  * シミュ専用の設定はクッキー（bf_conf）に保存する（URL出力には入れない）。
  */
 import {
 	BF_REGIONS, search, evalModel, skillTimes, nakedModel, modelFromScreen, attackSkillsOf,
-	itemName, cardName, allCardNames, BfStopped,
+	itemName, cardName, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped,
 } from "./bf-engine.js";
-import { BF_METRICS, BF_GROUPS, BF_METRIC_BY_KEY } from "./bf-metrics.js";
+import { BF_METRICS, BF_GROUPS, BF_METRIC_BY_KEY, ELM_NAMES } from "./bf-metrics.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
-import { loadPrices, priceOfFactory, priceWorlds } from "./bf-price.js";
+import { loadPrices, priceOfFactory } from "./bf-price.js";
+import { applyModelToScreen } from "./bf-apply.js";
 
 const COOKIE = "bf_conf";
-const DEFAULT_WORLD = "Noatun";
+const PRICE_WORLD = "Noatun"; // 値段はN鯖のものだけを使う
 const h = (tag, attrs = {}, ...kids) => {
 	const e = document.createElement(tag);
 	for (const [k, v] of Object.entries(attrs)) {
@@ -26,16 +27,29 @@ const h = (tag, attrs = {}, ...kids) => {
 const fmtNum = (v) => (Math.round(v * 100) / 100).toLocaleString("ja-JP");
 const fmtZeny = (v) => v == null ? "—" : Math.round(v).toLocaleString("ja-JP") + " z";
 const fmtSec = (ms) => (ms / 1000).toLocaleString("ja-JP", { maximumFractionDigits: 2 }) + "秒";
-const numOrNull = (s) => (s === "" || s == null || !Number.isFinite(Number(s))) ? null : Number(s);
+const numOrNull = (s) => {
+	const t = String(s ?? "").trim().replace(/[０-９．－]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
+	return t === "" || !Number.isFinite(Number(t)) ? null : Number(t);
+};
+const fmtMetric = (m, v) => m.kind === "elm" ? (ELM_NAMES[v] ?? "—") : fmtNum(v) + (m.unit || "");
+
+/** 数値の入力欄（上下の矢印なし）と、中身を消す✕ボタン */
+function numInput(value, onChange, attrs = {}) {
+	const inp = h("input", { type: "text", inputmode: "decimal", class: "bf-target", value: value ?? "", placeholder: "—", ...attrs,
+		onchange: () => onChange(numOrNull(inp.value)) });
+	const clear = h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => { inp.value = ""; onChange(null); } }, "✕");
+	return h("span", { class: "bf-numwrap" }, inp, clear);
+}
 
 // ---- 設定（クッキー） ----
 const defaultConf = () => ({
 	targets: {},      // 指標キー -> 目標値
 	skillTargets: {}, // skillId -> {cf: 短縮ms, ct: 短縮ms}
-	cardRows: null,   // [[cardId, 個数]]（null なら今付いているものを入れる）
+	enchRows: null,   // [[エンチャントID, 目標の個数 or null]]（null なら今付いているものを入れる）
+	enchRemoved: [],  // 一覧から外したエンチャント（今付いていても自動では入れ直さない）
 	regionMode: {},   // regionKey -> "free" | "keep" | "lock"
 	ngItems: [], ngCards: [],
-	maxResults: 30, world: DEFAULT_WORLD, sort: "changes",
+	maxResults: 30, sort: "changes",
 });
 let conf = defaultConf();
 function loadConf() {
@@ -45,6 +59,8 @@ function loadConf() {
 		const c = JSON.parse(decodeURIComponent(m[1]));
 		conf = { ...defaultConf(), ...c };
 		if (!conf.targets || Array.isArray(conf.targets)) conf.targets = {};
+		delete conf.cardRows; delete conf.world;
+		if (conf.targets.castVary != null) delete conf.targets.castVary;
 	} catch { /* 壊れていたら既定値 */ }
 }
 function saveConf() {
@@ -52,7 +68,7 @@ function saveConf() {
 }
 
 // ---- 名前の一覧 ----
-let itemNameList = null, cardNameList = null;
+let itemNameList = null, cardNameList = null, enchNameList = null;
 function itemNames() {
 	if (!itemNameList) {
 		const kinds = new Set([...BF_REGIONS.flatMap((r) => r.kinds || []), ...Array.from({ length: 22 }, (_, i) => i + 1)]);
@@ -61,10 +77,8 @@ function itemNames() {
 	}
 	return itemNameList;
 }
-function cardNames() {
-	if (!cardNameList) cardNameList = allCardNames();
-	return cardNameList;
-}
+const cardNames = () => cardNameList || (cardNameList = allCardNames());
+const enchNames = () => enchNameList || (enchNameList = allEnchantNames());
 
 // ---- スキルの説明（公式ツールの内容） ----
 let skillInfo = null;
@@ -91,18 +105,15 @@ function showTip(e, content) {
 function hideTip() { if (tip) tip.style.display = "none"; }
 
 // ---- 画面 ----
-let root, stateBox, skillBox, cardBox, regionBox, ngBox, progressBox, resultBox, worldSelect, searchBtn, stopBtn;
+let root, stateBox, enchBox, skillBox, regionBox, ngBox, progressBox, resultBox, searchBtn, stopBtn;
 let lastResults = null, stopFlag = false, running = false, prices = null, lastModel = null, skillList = [];
 
 export async function initBuildFinder(container) {
 	loadConf();
 	root = container;
 	root.append(
-		h("h2", { class: "bf-title" }, "装備シミュレーター"),
-		h("p", { class: "bf-lead" }, "上で今の装備を設定し、目標を入れて検索すると、今の装備から目標を達成できる構成を探します。"),
-		section("今の状態と目標", stateBox = h("div", { class: "bf-state" })),
+		section("今の状態と目標", h("div", {}, stateBox = h("div", { class: "bf-state" }), enchBox = h("div", { class: "bf-enchrows" }))),
 		section("スキル", skillBox = h("div", { class: "bf-skills" })),
-		section("カード・エンチャ", cardBox = h("div", { class: "bf-cardrows" })),
 		section("部位ごとの設定", regionBox = h("table", { class: "bf-regions" })),
 		section("除外装備", buildNg()),
 		section("検索", buildSearch()),
@@ -110,7 +121,6 @@ export async function initBuildFinder(container) {
 		licenseNote(),
 	);
 	[prices] = await Promise.all([loadPrices(), loadSkillInfo()]);
-	renderWorldSelect();
 	refreshAll();
 	let timer = 0;
 	document.addEventListener("change", (e) => {
@@ -131,7 +141,7 @@ function licenseNote() {
 		" の計算部分を使って作っています（非営利・",
 		h("a", { href: "https://polyformproject.org/licenses/noncommercial/1.0.0", target: "_blank", rel: "noopener" }, "PolyForm Noncommercial 1.0.0"),
 		"）。ラトリオ、ラトリオ避難所、データ提供者の皆さまへの謝辞と著作権表示は ",
-		h("a", { href: "../../LICENSE", target: "_blank" }, "LICENSE"), " の Required Notice を参照。値段は公式ツールの取引履歴から集計しています。");
+		h("a", { href: "../../LICENSE", target: "_blank" }, "LICENSE"), " の Required Notice を参照。値段は公式ツールの取引履歴（ノアトゥン）から集計しています。");
 }
 
 function refreshAll() {
@@ -139,30 +149,101 @@ function refreshAll() {
 	try { model = modelFromScreen(); } catch { stateBox.textContent = "計算の準備中です"; return; }
 	lastModel = model;
 	renderState(model);
-	renderCards(model);
+	renderEnch(model);
 	renderRegions(model);
 	renderSkills(model);
 }
 
 // ---- 今の状態と目標 ----
-function renderState(model) {
-	const val = evalModel(model);
+function metricGroupsTable(val, opts = {}) {
+	const { withTarget = false, before = null } = opts;
 	const grid = h("div", { class: "bf-metrics" });
 	for (const g of BF_GROUPS) {
 		const ms = BF_METRICS.filter((m) => m.group === g);
+		const head = h("tr", { class: "bf-mhead" }, h("th", {}), before ? h("th", {}, "今") : null, h("th", {}, before ? "この構成" : "今"), withTarget ? h("th", {}, "目標") : null);
 		grid.append(h("div", { class: "bf-mgroup" }, h("div", { class: "bf-mgroup-title" }, g),
-			h("table", {}, h("tr", { class: "bf-mhead" }, h("th", {}), h("th", {}, "今"), h("th", {}, "目標")),
-				ms.map((m) => {
-					const t = conf.targets[m.key];
-					const met = t != null && val[m.key] >= t;
-					return h("tr", { class: t != null ? (met ? "bf-met" : "bf-unmet") : "" },
-						h("th", {}, m.label),
-						h("td", { class: val[m.key] ? "bf-cur" : "bf-cur bf-zero" }, fmtNum(val[m.key]) + (m.unit ? m.unit : "")),
-						h("td", {}, h("input", { type: "number", step: "any", class: "bf-target", value: t ?? "", placeholder: "—",
-							onchange: (e) => { const v = numOrNull(e.target.value); if (v == null) delete conf.targets[m.key]; else conf.targets[m.key] = v; saveConf(); renderState(lastModel); } })));
-				}))));
+			h("table", {}, head, ms.map((m) => {
+				const t = conf.targets[m.key];
+				const met = t != null && (m.kind === "elm" ? val[m.key] === t : val[m.key] >= t);
+				const changed = before && before[m.key] !== val[m.key];
+				return h("tr", { class: (t != null ? (met ? "bf-met" : "bf-unmet") : "") + (changed ? " bf-changed" : "") },
+					h("th", {}, m.label),
+					before ? h("td", { class: "bf-cur bf-before" }, fmtMetric(m, before[m.key])) : null,
+					h("td", { class: val[m.key] ? "bf-cur" : "bf-cur bf-zero" }, fmtMetric(m, val[m.key])),
+					withTarget ? h("td", {}, targetInput(m)) : null);
+			}))));
 	}
-	stateBox.replaceChildren(grid);
+	return grid;
+}
+function targetInput(m) {
+	const set = (v) => {
+		if (v == null) delete conf.targets[m.key]; else conf.targets[m.key] = v;
+		saveConf(); renderState(lastModel);
+	};
+	if (m.kind === "elm") {
+		const t = conf.targets[m.key];
+		const sel = h("select", { class: "bf-target", onchange: () => set(sel.value === "" ? null : Number(sel.value)) },
+			h("option", { value: "" }, "—"), ELM_NAMES.map((n, i) => h("option", { value: i, selected: t === i }, n)));
+		return h("span", { class: "bf-numwrap" }, sel, h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => set(null) }, "✕"));
+	}
+	return numInput(conf.targets[m.key], set);
+}
+function renderState(model) {
+	stateBox.replaceChildren(metricGroupsTable(evalModel(model), { withTarget: true }));
+}
+
+// ---- エンチャント ----
+function currentEnchCounts(model) {
+	const counts = new Map();
+	for (const cid of model.card) if (cid > 0 && isEnchant(cid)) counts.set(cid, (counts.get(cid) || 0) + 1);
+	return counts;
+}
+const enchTs = [];
+function renderEnch(model) {
+	const counts = currentEnchCounts(model);
+	if (conf.enchRows == null) conf.enchRows = [];
+	conf.enchRows = conf.enchRows.filter(([cid]) => cid > 0 && isEnchant(cid));
+	// 今付いているエンチャントは一覧に入れておく（目標は空欄のまま）
+	for (const cid of counts.keys()) if (!conf.enchRows.some(([c]) => c === cid) && !conf.enchRemoved.includes(cid)) conf.enchRows.push([cid, null]);
+	saveConf();
+	// 選択中のプルダウンを閉じてから作り直す（フォーカス移動中の作り直しで落ちないように）
+	for (const ts of enchTs.splice(0)) try { ts.destroy(); } catch { /* 済み */ }
+	enchBox.replaceChildren(h("div", { class: "bf-mgroup bf-enchgroup" }, h("div", { class: "bf-mgroup-title" }, "エンチャント"),
+		h("table", { class: "bf-cardtable" },
+			h("tr", { class: "bf-mhead" }, h("th", {}), h("th", {}, "今"), h("th", {}, "目標の個数"), h("th", {})),
+			conf.enchRows.map((row, i) => enchRow(row, i, counts)),
+			enchRow([0, null], conf.enchRows.length, counts))));
+}
+function enchRow(row, i, counts) {
+	const [cid, n] = row;
+	const sel = h("select", { class: "bf-cardsel" }, h("option", { value: "" }, ""));
+	if (cid) sel.append(h("option", { value: cid, selected: true }, cardName(cid)));
+	const num = cid ? numInput(n, (v) => { conf.enchRows[i][1] = v == null ? null : Math.max(0, Math.floor(v)); saveConf(); }) : null;
+	const del = cid ? h("button", { type: "button", class: "bf-del", title: "一覧から外す", onclick: () => {
+		conf.enchRows.splice(i, 1);
+		if (!conf.enchRemoved.includes(cid)) conf.enchRemoved.push(cid);
+		saveConf(); renderEnch(lastModel);
+	} }, "外す") : null;
+	const cur = cid ? counts.get(cid) || 0 : null;
+	const tr = h("tr", {}, h("td", {}, sel), h("td", { class: cur ? "bf-cur" : "bf-cur bf-zero" }, cid ? String(cur) : ""), h("td", {}, num), h("td", {}, del));
+	queueMicrotask(() => {
+		if (!window.TomSelect) return;
+		const ts = new window.TomSelect(sel, {
+			options: enchNames().map(([id, name]) => ({ value: String(id), text: name })),
+			maxOptions: 200, placeholder: cid ? "" : "エンチャントを追加（名前を入力）", allowEmptyOption: true,
+			onChange: (v) => {
+				const id = Number(v) || 0;
+				if (!id) return;
+				if (cid) conf.enchRows[i][0] = id; else conf.enchRows.push([id, null]);
+				conf.enchRemoved = conf.enchRemoved.filter((x) => x !== id);
+				saveConf();
+				setTimeout(() => renderEnch(lastModel), 0);
+			},
+		});
+		enchTs.push(ts);
+		if (cid) ts.setValue(String(cid), true);
+	});
+	return tr;
 }
 
 // ---- スキル ----
@@ -190,14 +271,12 @@ async function renderSkills(model) {
 			nameEl.addEventListener("mouseleave", hideTip);
 		}
 		const link = info ? h("a", { href: `https://rotool.gungho.jp/skill/${info.c}`, target: "_blank", rel: "noopener", class: "bf-sk-link", title: "公式ツールを開く" }, "🔗") : null;
-		const mk = (kind) => h("input", { type: "number", min: 0, step: 100, class: "bf-target", value: tgt[kind] ?? "", placeholder: "—",
-			onchange: (e) => {
-				const v = numOrNull(e.target.value);
-				const t = conf.skillTargets[id] || (conf.skillTargets[id] = {});
-				if (v == null) delete t[kind]; else t[kind] = Math.abs(v);
-				if (t.cf == null && t.ct == null) delete conf.skillTargets[id];
-				saveConf();
-			} });
+		const mk = (kind) => numInput(tgt[kind], (v) => {
+			const t = conf.skillTargets[id] || (conf.skillTargets[id] = {});
+			if (v == null) delete t[kind]; else t[kind] = Math.abs(v);
+			if (t.cf == null && t.ct == null) delete conf.skillTargets[id];
+			saveConf();
+		});
 		const c = { cf: h("td", { class: "bf-cur" }, "…"), cfr: h("td", { class: "bf-cur" }, "…"), ct: h("td", { class: "bf-cur" }, "…"), ctr: h("td", { class: "bf-cur" }, "…") };
 		tbody.append(h("tr", { class: tgt.cf != null || tgt.ct != null ? "bf-sk-on" : "" },
 			h("td", { class: "bf-sk-name" }, link, nameEl),
@@ -231,56 +310,6 @@ function skillTipContent(name, info) {
 	return box;
 }
 
-// ---- カード・エンチャ ----
-function currentCardCounts(model) {
-	const counts = new Map();
-	for (const cid of model.card) if (cid > 0 && cardName(cid)) counts.set(cid, (counts.get(cid) || 0) + 1);
-	return counts;
-}
-function renderCards(model) {
-	if (conf.cardRows == null) {
-		conf.cardRows = [...currentCardCounts(model)].map(([cid, n]) => [cid, n]);
-		saveConf();
-	}
-	const counts = currentCardCounts(model);
-	const rows = conf.cardRows.filter(([cid]) => cid > 0);
-	// 選択中のプルダウンを閉じてから作り直す（フォーカス移動中の作り直しで落ちないように）
-	for (const ts of cardTs.splice(0)) try { ts.destroy(); } catch { /* 済み */ }
-	cardBox.replaceChildren(
-		h("p", { class: "bf-note" }, "付けたいカード・エンチャ（潜在解放など）と個数。今付いているものは最初から入っています。"),
-		h("table", { class: "bf-cardtable" },
-			h("tr", {}, h("th", {}, "カード・エンチャ"), h("th", {}, "今"), h("th", {}, "目標の個数"), h("th", {})),
-			rows.map((row, i) => cardRow(row, i, counts)),
-			cardRow([0, 1], rows.length, counts)));
-}
-const cardTs = [];
-function cardRow(row, i, counts) {
-	const [cid, n] = row;
-	const sel = h("select", { class: "bf-cardsel" }, h("option", { value: "" }, ""));
-	if (cid) sel.append(h("option", { value: cid, selected: true }, cardName(cid)));
-	const num = h("input", { type: "number", min: 0, max: 12, value: cid ? n : 1, class: "bf-count",
-		onchange: () => { if (!cid) return; conf.cardRows[i][1] = Math.max(0, Number(num.value) || 0); saveConf(); } });
-	const del = cid ? h("button", { type: "button", class: "bf-x", title: "削除", onclick: () => { conf.cardRows.splice(i, 1); saveConf(); renderCards(lastModel); } }, "✕") : null;
-	const tr = h("tr", {}, h("td", {}, sel), h("td", { class: "bf-cur" }, cid ? String(counts.get(cid) || 0) : ""), h("td", {}, num), h("td", {}, del));
-	queueMicrotask(() => {
-		if (!window.TomSelect) return;
-		const ts = new window.TomSelect(sel, {
-			options: cardNames().map(([id, name]) => ({ value: String(id), text: name })),
-			maxOptions: 200, placeholder: "名前を入力して選ぶ", allowEmptyOption: true,
-			onChange: (v) => {
-				const id = Number(v) || 0;
-				if (!id) return;
-				if (cid) conf.cardRows[i][0] = id; else conf.cardRows.push([id, Number(num.value) || 1]);
-				saveConf();
-				setTimeout(() => renderCards(lastModel), 0);
-			},
-		});
-		cardTs.push(ts);
-		if (cid) ts.setValue(String(cid), true);
-	});
-	return tr;
-}
-
 // ---- 部位ごとの設定 ----
 const MODES = [["free", "自由"], ["keep", "装備だけ固定"], ["lock", "完全固定"]];
 function renderRegions(model) {
@@ -290,7 +319,7 @@ function renderRegions(model) {
 		const cur = model?.equip?.[r.eq];
 		const btns = h("div", { class: "bf-modes" }, MODES.map(([k, label]) => h("button", { type: "button", class: "bf-mode" + (k === mode ? " on" : ""),
 			onclick: () => { conf.regionMode[r.key] = k; saveConf(); renderRegions(lastModel); } }, label)));
-		regionBox.append(h("tr", {}, h("td", {}, r.label), h("td", {}, cur ? itemName(cur) : "—"), h("td", {}, btns)));
+		regionBox.append(h("tr", {}, h("td", {}, r.label), h("td", {}, cur && !isRegionEmpty(model, r) ? itemName(cur) : "—"), h("td", {}, btns)));
 	}
 }
 
@@ -302,19 +331,21 @@ function buildNg() {
 		if (!window.TomSelect) return;
 		const ts = new window.TomSelect(sel, {
 			options: [...itemNames().map(([id, n]) => ({ value: "i" + id, text: n })), ...cardNames().map(([id, n]) => ({ value: "c" + id, text: n }))],
-			maxOptions: 200, placeholder: "除外する装備・カード・エンチャの名前を入力", allowEmptyOption: true,
+			maxOptions: 200, placeholder: "除外する装備・カード・エンチャントの名前を入力", allowEmptyOption: true,
 			onChange: (v) => {
 				if (!v) return;
-				const id = Number(v.slice(1));
-				const list = v[0] === "i" ? conf.ngItems : conf.ngCards;
-				if (!list.includes(id)) list.push(id);
-				saveConf(); renderNg();
+				addNg(v[0] === "i" ? "item" : "card", Number(v.slice(1)));
 				ts.clear(true);
 			},
 		});
 	});
 	renderNg();
-	return h("div", {}, h("p", { class: "bf-note" }, "ここに入れた装備・カード・エンチャは検索結果に出しません。"), h("div", { class: "bf-ngsel" }, sel), ngBox);
+	return h("div", {}, h("div", { class: "bf-ngsel" }, sel), ngBox);
+}
+function addNg(kind, id) {
+	const list = kind === "item" ? conf.ngItems : conf.ngCards;
+	if (!list.includes(id)) list.push(id);
+	saveConf(); renderNg();
 }
 function renderNg() {
 	ngBox.replaceChildren(
@@ -329,27 +360,24 @@ function chip(label, onRemove) {
 
 // ---- 検索 ----
 function buildSearch() {
-	const maxIn = h("input", { type: "number", min: 1, max: 200, value: conf.maxResults, style: "width:4em", onchange: () => { conf.maxResults = Number(maxIn.value) || 30; saveConf(); } });
-	worldSelect = h("select", { onchange: () => { conf.world = worldSelect.value; saveConf(); if (lastResults) renderResults(); } });
+	const maxIn = numInput(conf.maxResults, (v) => { conf.maxResults = Math.max(1, Math.min(200, Math.floor(v || 30))); saveConf(); });
 	searchBtn = h("button", { type: "button", class: "bf-go", onclick: runSearch }, "検索");
 	stopBtn = h("button", { type: "button", class: "bf-stop", disabled: true, onclick: () => { stopFlag = true; } }, "止める");
 	progressBox = h("div", { class: "bf-progress" });
 	return h("div", {},
-		h("div", { class: "bf-opts" },
-			h("label", {}, "値段のワールド: ", worldSelect),
-			h("label", {}, "表示件数: ", maxIn)),
+		h("div", { class: "bf-opts" }, h("label", {}, "表示件数: ", maxIn)),
 		h("div", { class: "bf-actions" }, searchBtn, stopBtn),
 		progressBox);
-}
-function renderWorldSelect() {
-	const worlds = priceWorlds(prices);
-	if (!worlds.includes(conf.world)) conf.world = worlds.includes(DEFAULT_WORLD) ? DEFAULT_WORLD : (worlds[0] || DEFAULT_WORLD);
-	worldSelect.replaceChildren(...(worlds.length ? worlds.map((w) => h("option", { value: w, selected: w === conf.world }, w)) : [h("option", { value: "" }, "値段データなし")]));
 }
 
 function buildConds() {
 	const conds = [];
-	for (const [key, t] of Object.entries(conf.targets)) if (BF_METRIC_BY_KEY[key] && t != null) conds.push({ key, target: t, label: BF_METRIC_BY_KEY[key].label, unit: BF_METRIC_BY_KEY[key].unit });
+	for (const [key, t] of Object.entries(conf.targets)) {
+		const m = BF_METRIC_BY_KEY[key];
+		if (!m || t == null) continue;
+		if (m.kind === "elm") conds.push({ key: "elm:" + t, target: 1, label: `${m.label}が${ELM_NAMES[t]}`, unit: "", elm: true });
+		else conds.push({ key, target: t, label: m.label, unit: m.unit });
+	}
 	const skillLv = {};
 	for (const [id, t] of Object.entries(conf.skillTargets)) {
 		const sk = skillList.find(([sid]) => sid === Number(id));
@@ -358,10 +386,8 @@ function buildConds() {
 		if (t.cf != null) conds.push({ key: `sk:${id}:cf`, target: t.cf, label: `${sk[1]} 固定詠唱の短縮`, unit: "ms" });
 		if (t.ct != null) conds.push({ key: `sk:${id}:ct`, target: t.ct, label: `${sk[1]} CTの短縮`, unit: "ms" });
 	}
-	const counts = lastModel ? currentCardCounts(lastModel) : new Map();
-	for (const [cid, n] of conf.cardRows || []) {
-		// 今と同じ個数のものは「外さない」条件としてだけ効く。0個は条件にしない
-		if (cid > 0 && n > 0) conds.push({ key: "card:" + cid, target: n, label: cardName(cid), unit: "個", cur: counts.get(cid) || 0 });
+	for (const [cid, n] of conf.enchRows || []) {
+		if (cid > 0 && n != null && n > 0) conds.push({ key: "card:" + cid, target: n, label: cardName(cid), unit: "個" });
 	}
 	return { conds, skillLv };
 }
@@ -381,7 +407,7 @@ async function runSearch() {
 			keepItem: BF_REGIONS.filter((r) => conf.regionMode[r.key] === "keep").map((r) => r.key),
 			ngItems: conf.ngItems, ngCards: conf.ngCards,
 			maxResults: conf.maxResults,
-			priceOf: priceOfFactory(prices, conf.world),
+			priceOf: priceOfFactory(prices, PRICE_WORLD),
 			onProgress: (text, ratio) => { progressBox.textContent = `${text}（${Math.round(ratio * 100)}%）`; },
 			shouldStop: () => stopFlag,
 		});
@@ -390,7 +416,7 @@ async function runSearch() {
 		progressBox.textContent = res.results.length ? `${res.results.length}件見つかりました（${sec}秒）` : `条件を満たす構成は見つかりませんでした（${sec}秒）`;
 		renderResults();
 	} catch (e) {
-		if (e instanceof BfStopped) progressBox.textContent = "止めました。";
+		if (e instanceof BfStopped) progressBox.textContent = "";
 		else { progressBox.textContent = "エラー: " + e.message; console.error(e); }
 	} finally {
 		running = false; searchBtn.disabled = false; stopBtn.disabled = true;
@@ -398,9 +424,18 @@ async function runSearch() {
 }
 
 // ---- 結果 ----
+/** 結果で新しく付けるもの（装備は名前、カード・エンチャは名前） */
+function newThings(r) {
+	const out = [];
+	for (const pk of r.picks) {
+		if (!pk.keep) out.push({ kind: "item", id: pk.itemId, label: itemName(pk.itemId) + (pk.pkg ? "（セット）" : "") });
+		for (const [, cid] of pk.cards) out.push({ kind: "card", id: cid, label: cardName(cid) });
+	}
+	return out;
+}
 function renderResults() {
 	if (!lastResults) return;
-	const { results, baseVal, conds } = lastResults;
+	const { results } = lastResults;
 	const sortSel = h("select", { onchange: () => { conf.sort = sortSel.value; saveConf(); renderResults(); } },
 		h("option", { value: "changes", selected: conf.sort === "changes" }, "変更箇所が少ない順"),
 		h("option", { value: "price", selected: conf.sort === "price" }, "値段が安い順"));
@@ -409,17 +444,69 @@ function renderResults() {
 		: (a, b) => (a.changes - b.changes) || (a.price - b.price));
 	resultBox.replaceChildren(
 		h("div", { class: "bf-res-head" }, h("h3", {}, "結果"), "並べ替え: ", sortSel),
-		h("div", { class: "bf-res-list" }, list.map((r, i) => h("div", { class: "bf-res" },
-			h("div", { class: "bf-res-top" },
-				h("span", { class: "bf-res-no" }, "#" + (i + 1)),
-				h("span", {}, `変更 ${r.changes}か所`),
-				h("span", { class: "bf-res-price" }, r.price > 0 ? fmtZeny(r.price) : "値段データなし")),
-			h("table", { class: "bf-res-vals" }, conds.map((c) => h("tr", {}, h("th", {}, c.label),
-				h("td", {}, `${fmtNum(baseVal[c.key])} → `, h("b", {}, fmtNum(r.values[c.key])), c.unit ? " " + c.unit : "")))),
-			h("ul", { class: "bf-res-picks" }, r.picks.map((pk) => h("li", {},
-				h("span", { class: "bf-res-region" }, pk.region.label),
-				pk.keep ? h("span", { class: "bf-zero" }, "（今の装備のまま）") : h("span", { class: "bf-res-item" }, itemName(pk.itemId)),
-				pk.cards.length ? h("span", { class: "bf-res-cards" }, " ＋ " + pk.cards.map(([, cid]) => cardName(cid)).join("、")) : null,
-				pk.price > 0 ? h("span", { class: "bf-res-pprice" }, fmtZeny(pk.price)) : null))),
-		))));
+		h("div", { class: "bf-res-list" }, list.map((r, i) => resultRow(r, i))));
+}
+function resultRow(r, i) {
+	const things = newThings(r);
+	const detail = h("div", { class: "bf-res-detail" });
+	const row = h("div", { class: "bf-res" });
+	const line = h("button", { type: "button", class: "bf-res-line", onclick: () => {
+		const open = row.classList.toggle("open");
+		if (open && !detail.childNodes.length) detail.append(resultDetail(r));
+	} },
+	h("span", { class: "bf-res-no" }, "#" + (i + 1)),
+	h("span", { class: "bf-res-chg" }, `${r.changes}か所`),
+	h("span", { class: "bf-res-price" }, r.price > 0 ? fmtZeny(r.price) : "値段不明"),
+	h("span", { class: "bf-res-new" }, things.map((t) => t.label).join("、") || "（付け替えなし）"));
+	row.append(line, detail);
+	return row;
+}
+function resultDetail(r) {
+	const { base, baseVal } = lastResults;
+	const m = r.model;
+	const changedRegions = new Set(r.picks.map((pk) => pk.region.key));
+	const table = h("table", { class: "bf-eqtable" },
+		h("tr", {}, h("th", {}, "部位"), h("th", {}, "装備"), h("th", {}, "カード／エンチャント 1"), h("th", {}, "2"), h("th", {}, "3"), h("th", {}, "4")));
+	for (const reg of BF_REGIONS) {
+		const iid = m.equip[reg.eq];
+		const empty = isRegionEmpty(m, reg);
+		const itemHit = iid !== base.equip[reg.eq];
+		const refine = reg.refine === "weapon" ? m.weapon.atkPlus : reg.refine ? m.defPlus[reg.refine] : 0;
+		const pk = r.picks.find((p) => p.region.key === reg.key);
+		const itemCell = h("td", { class: "bf-eq-item" + (itemHit ? " bf-hit" : "") },
+			empty ? h("span", { class: "bf-zero" }, "なし") : [(refine ? `+${refine} ` : ""), itemName(iid)],
+			itemHit && !empty ? ngButton("item", iid) : null,
+			pk?.pkg ? h("span", { class: "bf-set" }, "セット") : null);
+		const cardCells = reg.slots.map((s) => {
+			const cid = m.card[s] || 0;
+			const hit = cid !== (base.card[s] || 0);
+			return h("td", { class: hit ? "bf-hit" : "" }, cid ? [cardName(cid), hit ? ngButton("card", cid) : null] : h("span", { class: "bf-zero" }, "—"));
+		});
+		table.append(h("tr", { class: changedRegions.has(reg.key) ? "bf-eq-changed" : "" }, h("th", {}, reg.label), itemCell, cardCells));
+	}
+	const applyBtn = h("button", { type: "button", class: "bf-go bf-apply", onclick: () => {
+		applyBtn.disabled = true;
+		try {
+			applyModelToScreen(m, BF_REGIONS.filter((reg) => changedRegions.has(reg.key)));
+			applyBtn.textContent = "今の装備に反映しました";
+			setTimeout(refreshAll, 300);
+		} catch (e) {
+			console.error(e);
+			applyBtn.textContent = "反映できませんでした";
+		}
+	} }, "この構成を今の装備に反映");
+	return h("div", {},
+		h("div", { class: "bf-res-actions" }, applyBtn, h("span", { class: "bf-note" }, "色付きの欄が変わる所です。「除外」で除外装備に入れられます。")),
+		table,
+		metricGroupsTable(r.values, { before: baseVal }));
+}
+function ngButton(kind, id) {
+	const done = () => (kind === "item" ? conf.ngItems : conf.ngCards).includes(id);
+	const b = h("button", { type: "button", class: "bf-ngbtn", title: "除外装備に入れる", onclick: (e) => {
+		e.stopPropagation();
+		addNg(kind, id);
+		b.textContent = "除外済み"; b.disabled = true;
+	} }, done() ? "除外済み" : "除外");
+	if (done()) b.disabled = true;
+	return b;
 }

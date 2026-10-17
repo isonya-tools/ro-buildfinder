@@ -24,6 +24,7 @@ import * as K from "../../../engine/const/EnumItemKind.js";
 import * as CK from "../../../engine/const/EnumCardKind.js";
 import * as CR from "../../../engine/runtime/common.js";
 import { readMetrics } from "./bf-metrics.js";
+import { loadHard, makeRelevance, relevantItemSets } from "./bf-relevance.js";
 import * as NE from "../../../engine/equip/item.dat.js";
 
 const IDX_ID = 0, IDX_KIND = 1, IDX_SLOT = 5, IDX_NAME = 8;
@@ -56,6 +57,13 @@ export const BF_REGIONS = [
 
 function getRefine(m, r) { return r.refine === "weapon" ? m.weapon.atkPlus : r.refine ? m.defPlus[r.refine] : 0; }
 function setRefine(m, r, v) { if (r.refine === "weapon") m.weapon.atkPlus = v; else if (r.refine) m.defPlus[r.refine] = v; }
+/** 部位に装備を置く（カード・エンチャは外し、精錬値は指定値） */
+function placeItem(m, r, iid, refine) {
+	clearRegion(m, r);
+	m.equip[r.eq] = iid;
+	if (r.key === "weapon") m.weapon.type = ItemObjNew[iid][IDX_KIND];
+	setRefine(m, r, refine);
+}
 /** 部位を空にする（装備なし・カード/エンチャなし） */
 function clearRegion(m, r) {
 	m.equip[r.eq] = r.empty;
@@ -114,9 +122,10 @@ export function nakedModel(model) {
 }
 
 /**
- * 指標をまとめて出す。skills: [{id, lv}]（固定詠唱・CTの短縮量 sk:<id>:cf / sk:<id>:ct を出す）、naked: スキルの基準時間、cards: 数えるカードID
+ * 指標をまとめて出す。skills: [{id, lv}]（固定詠唱・CTの短縮量 sk:<id>:cf / sk:<id>:ct を出す）、naked: スキルの基準時間、
+ * cards: 数えるエンチャントID（card:<id>）、elms: 鎧の属性の目標（elm:<属性> が一致なら1）
  */
-export function evalAll(model, skills = [], naked = {}, cards = []) {
+export function evalAll(model, skills = [], naked = {}, cards = [], elms = []) {
 	const out = { ...evalModel(model) };
 	for (const sk of skills) {
 		const t = skillTimes(model, sk.id, sk.lv);
@@ -126,6 +135,7 @@ export function evalAll(model, skills = [], naked = {}, cards = []) {
 		out[`skraw:${sk.id}`] = t;
 	}
 	for (const cid of cards) out["card:" + cid] = model.card.reduce((a, c) => a + (c === cid ? 1 : 0), 0);
+	for (const e of elms) out["elm:" + e] = out.bodyElm === e ? 1 : 0;
 	return out;
 }
 
@@ -183,7 +193,20 @@ export function cardCandidatesOf(region) {
 	return out;
 }
 
-/** 全カード・エンチャントの名前一覧（条件「含めたいエンチャ・カード」用） */
+/** エンチャントの名前一覧（目標の「エンチャント」用） */
+export function allEnchantNames() {
+	const out = [];
+	for (const c of CardObjNew) {
+		if (!c || !c[CIDX_NAME] || c[CIDX_KIND] !== CK.CARD_KIND_ENCHANT) continue;
+		out.push([c[CIDX_ID], c[CIDX_NAME]]);
+	}
+	return out;
+}
+
+/** エンチャントか */
+export function isEnchant(cid) { return CardObjNew[cid]?.[CIDX_KIND] === CK.CARD_KIND_ENCHANT; }
+
+/** 全カード・エンチャントの名前一覧（除外装備用） */
 export function allCardNames() {
 	const out = [];
 	for (const c of CardObjNew) {
@@ -207,19 +230,22 @@ export function isTwoHanded(itemId) {
 }
 
 /**
- * 探索本体. 今の装備（画面の入力）を出発点に、部位ごとに「そのまま」「カード・エンチャだけ変える」「装備を入れ替える」を選んで
- * 目標を満たす構成を探す。
+ * 探索本体. 今の装備（画面の入力）を出発点に、部位ごとに「そのまま」「カード・エンチャだけ変える」「装備を入れ替える」を選び、
+ * さらにセット効果のある組み合わせ（複数部位をまとめて入れ替える）も候補に入れて、目標を満たす構成を探す。
+ * 候補は先に「目標に関係しそうなもの」だけに絞ってから実際に計算する（bf-relevance.js）。
  * @param {object} opt
- *   conds: [{key, target}] 目標（どれも target 以上で達成）。key は指標キー、"sk:<id>:cf"/"sk:<id>:ct"（スキルの固定詠唱/CTの短縮量ms）、"card:<id>"（そのカード・エンチャの個数）
+ *   conds: [{key, target}] 目標（どれも target 以上で達成）。key は指標キー、"sk:<id>:cf"/"sk:<id>:ct"（スキルの固定詠唱/CTの短縮量ms）、
+ *          "card:<id>"（そのエンチャントの個数）、"elm:<属性>"（鎧の属性。一致で1）
  *   skillLv: {skillId: Lv}
  *   locked: [regionKey...] 完全に固定する部位
- *   keepItem: [regionKey...] 装備は外さず、空き枠・変えたい枠のカード・エンチャだけ変えてよい部位
+ *   keepItem: [regionKey...] 装備は外さず、カード・エンチャだけ変えてよい部位
  *   ngItems / ngCards: 検索結果に出さない装備 / カード・エンチャ
  *   maxResults: 表示件数
  *   onProgress(text, ratio) / shouldStop() / priceOf(kind, id)
  */
 export async function search(opt) {
 	const { conds, skillLv = {}, locked = [], keepItem = [], ngItems = [], ngCards = [], maxResults = 30, onProgress = () => {}, shouldStop = () => false, priceOf = () => null } = opt;
+	await loadHard();
 	const base = modelFromScreen();
 	const jobId = base.status.jobId;
 	const ngItemSet = new Set(ngItems.map(Number));
@@ -228,9 +254,11 @@ export async function search(opt) {
 	const keys = conds.map((c) => c.key);
 	const skills = [...new Set(keys.filter((k) => k.startsWith("sk:")).map((k) => Number(k.split(":")[1])))].map((id) => ({ id, lv: skillLv[id] || 1 }));
 	const cards = keys.filter((k) => k.startsWith("card:")).map((k) => Number(k.slice(5)));
+	const elms = keys.filter((k) => k.startsWith("elm:")).map((k) => Number(k.slice(4)));
+	const rel = makeRelevance(keys);
 	const nakedM = nakedModel(base);
 	const naked = Object.fromEntries(skills.map((sk) => [sk.id, skillTimes(nakedM, sk.id, sk.lv)]));
-	const evalM = (m) => evalAll(m, skills, naked, cards);
+	const evalM = (m) => evalAll(m, skills, naked, cards, elms);
 	const meets = (val) => conds.every((c) => val[c.key] - c.target >= -1e-9);
 
 	const baseVal = evalM(base);
@@ -249,16 +277,60 @@ export async function search(opt) {
 	const relevant = (d) => d.some((x, i) => x > 1e-9 && need[i] > 0);
 	const zero = () => keys.map(() => 0);
 
+	// ---- 候補の絞り込み ----
+	onProgress("目標に関係する装備を絞り込んでいます", 0);
 	const regions = BF_REGIONS.filter((r) => !locked.includes(r.key));
-	const itemCands = (r) => keepItem.includes(r.key) ? [] : itemCandidatesOf(r, jobId, r.key === "weapon" ? WEAPON_KINDS : r.kinds).filter((id) => !ngItemSet.has(id));
-	const cardCands = (r) => cardCandidatesOf(r).filter((id) => !ngCardSet.has(id));
-	const enchOpts = (id) => enchantOptionsOf(id).map((a) => a.filter((c) => !ngCardSet.has(c)));
-	const totalWork = regions.reduce((a, r) => a + itemCands(r).length + cardCands(r).length, 0) || 1;
-	let done = 0;
-	const regionVariants = [];
+	const kindsOf = (r) => r.key === "weapon" ? WEAPON_KINDS : r.kinds;
+	const enchCache = new Map();
+	const enchOf = (id) => {
+		if (!enchCache.has(id)) enchCache.set(id, enchantOptionsOf(id).map((a) => a.filter((c) => !ngCardSet.has(c) && rel.card(c))));
+		return enchCache.get(id);
+	};
+	const cardCandsOf = (r) => cardCandidatesOf(r).filter((id) => !ngCardSet.has(id) && rel.card(id));
+	const itemCandsOf = (r, hasCardOpts) => {
+		if (keepItem.includes(r.key)) return [];
+		const all = itemCandidatesOf(r, jobId, kindsOf(r)).filter((id) => !ngItemSet.has(id));
+		const out = [];
+		const hosts = new Map(); // 効果は無関係でもカードを挿せる装備（スロット数ごとに一番安いもの）
+		for (const id of all) {
+			if (rel.item(id) || enchOf(id).some((a) => a.length)) { out.push(id); continue; }
+			const n = hasCardOpts ? itemSlotCount(id) : 0;
+			if (n <= 0) continue;
+			const p = priceOf("item", id) ?? Infinity;
+			const cur = hosts.get(n);
+			if (!cur || p < cur.p) hosts.set(n, { id, p });
+		}
+		for (const { id } of hosts.values()) out.push(id);
+		return out;
+	};
 
-	for (const r of regions) {
-		if (r.key === "weapon" && !baseWeapon && keepItem.includes(r.key)) continue;
+	const regionCards = regions.map(cardCandsOf);
+	const regionItems = regions.map((r, i) => itemCandsOf(r, regionCards[i].length > 0));
+	const sets = relevantItemSets(rel);
+	const totalWork = regionItems.reduce((a, l) => a + l.length, 0) + regionCards.reduce((a, l) => a + l.length, 0) + sets.length || 1;
+	let done = 0;
+
+	const regionVariants = [];
+	const regionCtx = [];
+	const slotChoicesFor = async (ctx, iid) => {
+		const nSlot = itemSlotCount(iid);
+		const ench = enchOf(iid);
+		const out = [];
+		for (let s = 0; s < 4; s++) {
+			if (s < nSlot) { out.push(ctx.cardOpts); continue; }
+			const opts = [];
+			for (const cid of ench[s] || []) {
+				await tick();
+				const ed = ctx.slotDelta(s, cid);
+				if (relevant(ed)) opts.push({ id: cid, d: ed });
+			}
+			out.push(opts);
+		}
+		return out;
+	};
+
+	for (let ri = 0; ri < regions.length; ri++) {
+		const r = regions[ri];
 		const curItem = isRegionEmpty(base, r) ? 0 : base.equip[r.eq];
 		const curCards = r.slots.map((s) => base.card[s] || 0);
 		const curRefine = getRefine(base, r);
@@ -281,28 +353,30 @@ export async function search(opt) {
 
 		// カード候補（差分は空の部位に入れたときのもの。カード枠どこに挿しても同じとみなす）
 		const cardOpts = [];
-		for (const cid of cardCands(r)) {
+		for (const cid of regionCards[ri]) {
 			await tick();
 			done++;
 			const d = slotDelta(0, cid);
 			if (relevant(d)) cardOpts.push({ id: cid, d });
 		}
+		const ctx = { r, cardOpts, slotDelta, keepVariants: [] };
 
 		const variants = [];
+		const twoHand0 = r.key === "weapon" && isTwoHanded(curItem);
 		// a) そのまま
-		variants.push({ region: r, keep: true, itemId: curItem, cards: [], d: zero(), price: 0, count: 0, changed: 0, twoHand: r.key === "weapon" && isTwoHanded(curItem), usesShield: r.key === "shield" && !!curItem });
+		variants.push({ region: r, keep: true, itemId: curItem, cards: [], d: zero(), price: 0, count: 0, changed: 0, twoHand: twoHand0, usesShield: r.key === "shield" && !!curItem });
 
 		// b) 今の装備のまま、カード・エンチャだけ変える
 		if (curItem) {
 			const nSlot = itemSlotCount(curItem);
-			const ench = enchOpts(curItem);
+			const ench = enchOf(curItem);
 			const slotChoices = [];
 			for (let s = 0; s < 4; s++) {
 				const opts = [];
 				if (s < nSlot) {
 					// 今のカードを外したときの差分を足す
 					let removeD = zero();
-					if (curCards[s]) {
+					if (curCards[s] && cardOpts.length) {
 						const m0 = cloneModel(base);
 						m0.card[r.slots[s]] = 0;
 						removeD = vecFrom(evalM(m0), baseVal);
@@ -322,35 +396,21 @@ export async function search(opt) {
 			}
 			for (const v of expandSlots(r, zero(), slotChoices, priceOf, need, 0)) {
 				if (!v.cards.length) continue;
-				variants.push({ region: r, keep: true, itemId: curItem, cards: v.cards, d: v.d, price: v.price, count: v.cards.length, changed: 1, twoHand: variants[0].twoHand, usesShield: variants[0].usesShield });
+				variants.push({ region: r, keep: true, itemId: curItem, cards: v.cards, d: v.d, price: v.price, count: v.cards.length, changed: 1, twoHand: twoHand0, usesShield: variants[0].usesShield });
 			}
 		}
+		ctx.keepVariants = variants.slice();
 
 		// c) 装備を入れ替える
-		for (const iid of itemCands(r)) {
+		for (const iid of regionItems[ri]) {
 			await tick();
 			done++;
-			if (done % 20 === 0) onProgress(`${r.label}：装備を確認中（${itemName(iid)}）`, done / totalWork);
+			if (done % 10 === 0) onProgress(`${r.label}：装備を確認中（${itemName(iid)}）`, done / totalWork);
 			if (iid === curItem) continue;
 			const m = cloneModel(cleared);
-			m.equip[r.eq] = iid;
-			if (r.key === "weapon") m.weapon.type = ItemObjNew[iid][IDX_KIND];
-			setRefine(m, r, curRefine);
+			placeItem(m, r, iid, curRefine);
 			const d = vecFrom(evalM(m), baseVal);
-
-			const nSlot = itemSlotCount(iid);
-			const ench = enchOpts(iid);
-			const slotChoices = [];
-			for (let s = 0; s < 4; s++) {
-				if (s < nSlot) { slotChoices.push(cardOpts); continue; }
-				const opts = [];
-				for (const cid of ench[s] || []) {
-					await tick();
-					const ed = slotDelta(s, cid);
-					if (relevant(ed)) opts.push({ id: cid, d: ed });
-				}
-				slotChoices.push(opts);
-			}
+			const slotChoices = await slotChoicesFor(ctx, iid);
 			if (!relevant(d) && !slotChoices.some((o) => o.length)) continue;
 			const itemPrice = priceOf("item", iid) ?? 0;
 			for (const v of expandSlots(r, d, slotChoices, priceOf, need, itemPrice)) {
@@ -358,13 +418,68 @@ export async function search(opt) {
 			}
 		}
 		regionVariants.push(paretoPrune(variants, need, true).slice(0, 300));
+		regionCtx.push(ctx);
+	}
+
+	// ---- セット効果（複数部位をまとめて入れ替える候補） ----
+	const regionIndex = new Map(regions.map((r, i) => [r.key, i]));
+	const shieldLocked = !regionIndex.has("shield");
+	const baseShield = !isRegionEmpty(base, BF_REGIONS.find((r) => r.key === "shield"));
+	let pkgCount = 0;
+	for (const S of sets) {
+		await tick();
+		done++;
+		if (done % 10 === 0) onProgress("セット効果を確認中", done / totalWork);
+		const assign = [];
+		const used = new Set();
+		let ok = true;
+		for (const mid of S.members) {
+			const x = ItemObjNew[mid];
+			if (!x) { ok = false; break; }
+			const eqR = BF_REGIONS.find((r) => !used.has(r.key) && base.equip[r.eq] === mid);
+			if (eqR) { used.add(eqR.key); assign.push({ region: eqR, itemId: mid, already: true }); continue; }
+			if (ngItemSet.has(mid) || !IsMatchJobRestrict(mid, jobId)) { ok = false; break; }
+			const r = regions.find((r) => !used.has(r.key) && !keepItem.includes(r.key) && kindsOf(r)?.includes(x[IDX_KIND]));
+			if (!r) { ok = false; break; }
+			used.add(r.key);
+			assign.push({ region: r, itemId: mid, already: false });
+		}
+		if (!ok || assign.every((a) => a.already)) continue;
+		const wpn = assign.find((a) => a.region.key === "weapon" && !a.already);
+		if (wpn && isTwoHanded(wpn.itemId) && (assign.some((a) => a.region.key === "shield") || (shieldLocked && baseShield))) continue;
+		const m = cloneModel(base);
+		for (const a of assign) if (!a.already) placeItem(m, a.region, a.itemId, getRefine(base, a.region));
+		const d = vecFrom(evalM(m), baseVal);
+		if (!relevant(d)) continue;
+		const inDfs = assign.filter((a) => regionIndex.has(a.region.key)).sort((a, b) => regionIndex.get(a.region.key) - regionIndex.get(b.region.key));
+		const pkg = { id: S.setIndex, src: S.src, regions: inDfs.map((a) => regionIndex.get(a.region.key)), members: S.members };
+		for (let k = 0; k < inDfs.length; k++) {
+			const a = inDfs[k];
+			const idx = regionIndex.get(a.region.key);
+			const ctx = regionCtx[idx];
+			let vs;
+			if (a.already) vs = ctx.keepVariants.map((v) => ({ ...v }));
+			else {
+				const slotChoices = await slotChoicesFor(ctx, a.itemId);
+				vs = expandSlots(a.region, zero(), slotChoices, priceOf, need, priceOf("item", a.itemId) ?? 0).map((v) => ({
+					region: a.region, keep: false, itemId: a.itemId, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1,
+					twoHand: a.region.key === "weapon" && isTwoHanded(a.itemId), usesShield: a.region.key === "shield",
+				}));
+			}
+			vs = paretoPrune(vs, need).slice(0, 20);
+			for (const v of vs) {
+				v.pkg = pkg;
+				v.pkgHead = k === 0;
+				if (k === 0) v.d = v.d.map((x, i) => x + d[i]);
+				regionVariants[idx].push(v);
+			}
+		}
+		pkgCount++;
 	}
 
 	// ---- 組み合わせ探索（深さ優先＋上限による枝刈り） ----
 	onProgress("組み合わせを探しています", 1);
-	const weaponLocked = !regions.some((r) => r.key === "weapon");
-	const shieldLocked = !regions.some((r) => r.key === "shield");
-	const baseShield = !isRegionEmpty(base, BF_REGIONS.find((r) => r.key === "shield"));
+	const weaponLocked = !regionIndex.has("weapon");
 	const n = regionVariants.length;
 	const maxRest = [];
 	let acc = zero();
@@ -378,6 +493,7 @@ export async function search(opt) {
 	const found = [];
 	const limit = maxResults * 20;
 	const pick = [];
+	const req = new Array(n).fill(null); // セットで決まっている部位
 	let nodes = 0;
 	const dfs = async (i, sum, twoHand) => {
 		if (++nodes % 2000 === 0) await tick();
@@ -389,13 +505,21 @@ export async function search(opt) {
 			found.push({ picks: pick.slice(), sum: sum.slice() });
 			return;
 		}
+		const must = req[i];
 		for (const v of regionVariants[i]) {
+			if (must) { if (v.pkg !== must) continue; }
+			else if (v.pkg) {
+				if (!v.pkgHead) continue;
+				if (v.pkg.regions.some((j) => j > i && req[j])) continue;
+			}
 			let th = twoHand;
 			if (v.region.key === "weapon") th = v.twoHand;
 			if (v.region.key === "shield" && v.usesShield && th) continue;
+			if (v.pkgHead) for (const j of v.pkg.regions) if (j > i) req[j] = v.pkg;
 			pick.push(v);
 			await dfs(i + 1, sum.map((x, k) => x + v.d[k]), th);
 			pick.pop();
+			if (v.pkgHead) for (const j of v.pkg.regions) if (j > i) req[j] = null;
 			if (found.length >= limit) return;
 		}
 	};
@@ -414,13 +538,7 @@ export async function search(opt) {
 		for (const v of f.picks) {
 			if (!v.changed) continue;
 			const r = v.region;
-			if (!v.keep) {
-				const ref = getRefine(base, r);
-				clearRegion(m, r);
-				m.equip[r.eq] = v.itemId;
-				if (r.key === "weapon") m.weapon.type = ItemObjNew[v.itemId][IDX_KIND];
-				setRefine(m, r, ref);
-			}
+			if (!v.keep) placeItem(m, r, v.itemId, getRefine(base, r));
 			for (const [slot, cid] of v.cards) m.card[slot] = cid;
 		}
 		const sig = JSON.stringify([m.equip, m.card]);
@@ -431,7 +549,7 @@ export async function search(opt) {
 		results.push({ picks: f.picks.filter((v) => v.changed), values: val, price: costOf(f), changes: changesOf(f), model: m });
 		onProgress(`確認中：${results.length}件見つかりました`, 1);
 	}
-	return { results, baseVal, base, candidates: found.length };
+	return { results, baseVal, base, candidates: found.length, stats: { items: regionItems.reduce((a, l) => a + l.length, 0), cards: regionCards.reduce((a, l) => a + l.length, 0), sets: sets.length, packages: pkgCount } };
 }
 
 /** 部位の4枠（カード＋エンチャ3枠）の選び方を展開する（劣るものは途中で捨てる） */
