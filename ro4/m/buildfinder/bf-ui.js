@@ -5,7 +5,7 @@
  */
 import {
 	BF_REGIONS, search, evalModel, skillTimes, nakedModel, modelFromScreen, attackSkillsOf,
-	itemName, cardName, itemSlotCount, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped, setBuffOn,
+	itemName, cardName, itemSlotCount, loadOfficial, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped, setBuffOn,
 } from "./bf-engine.js";
 import { BF_METRICS, BF_GROUPS, BF_METRIC_BY_KEY, ELM_NAMES } from "./bf-metrics.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
@@ -134,7 +134,7 @@ export async function initBuildFinder(container) {
 	setBuffOn(conf.buffOn);
 	// 謝辞・ライセンスはページの一番下に置く
 	document.body.append(h("div", { id: "BF_FOOT" }, licenseNote()));
-	[prices] = await Promise.all([loadPrices(), loadSkillInfo()]);
+	[prices] = await Promise.all([loadPrices(), loadSkillInfo(), loadOfficial()]);
 	refreshAll();
 	let timer = 0;
 	document.addEventListener("change", (e) => {

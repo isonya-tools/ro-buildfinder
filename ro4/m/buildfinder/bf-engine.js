@@ -193,13 +193,52 @@ export function isRegionEmpty(model, region) {
  * エンチャントの候補（スロットごと）と、付けるのに要る精錬値. 戻り値: [Map(エンチャントID → 必要な精錬値), ...]（4スロット分）
  */
 const enchDetailCache = new Map();
+
+/**
+ * 公式の強化・エンチャント情報（bf-official-ench.json、tools-bf-official.py で作成）。
+ * らとりおのエンチャント一覧は、同じ名前の一覧をまとめて複数の装備に付けているため、装備によっては
+ * 実際には付かないエンチャントが混ざる（例: 蜃気楼エンチャント グループ1 → イリュージョンマフラーのイミューンファイア）。
+ * 公式にその装備の一覧がほぼそろって載っている（8割以上一致）のに、公式に無いエンチャントだけ外す。
+ * 表記の違いで外しすぎないよう、能力値・Atk・SP などの数値だけのエンチャントは外さない。
+ */
+let official = null;
+const normName = (s) => String(s).normalize("NFKC").replace(/\[\d+\]$/, "").replace(/\(最大\d+個\)/g, "").replace(/[<>＜＞\s]/g, "").toLowerCase();
+const PLAIN_STAT = /^(atk|matk|sp|maxsp|hp|maxhp|str|agi|vit|int|dex|luk|cri|flee|hit|def|mdef|aspd|詠唱時間|special)/;
+export async function loadOfficial() {
+	if (official) return;
+	try {
+		const res = await fetch(new URL("./bf-official-ench.json", import.meta.url));
+		const j = res.ok ? await res.json() : null;
+		if (j) {
+			const names = j.names.map(normName);
+			official = { names: new Set(names), items: new Map(Object.entries(j.items).map(([k, v]) => [normName(k), new Set(v.map((i) => names[i]))])) };
+		}
+	} catch { /* 読めなければらとりおのデータのまま */ }
+	if (!official) official = { names: new Set(), items: new Map() };
+	enchDetailCache.clear();
+}
+/** 一覧1つぶん（スロットごとの [_, cardId, params] の配列）から、公式に無いものを外す */
+function officialFilter(itemId, slots) {
+	const allowed = official?.items.get(normName(itemName(itemId)));
+	if (!allowed) return slots;
+	const known = new Set();
+	for (const slot of slots) for (const e of slot) if (e && e[1] > 0) { const n = normName(cardName(e[1])); if (official.names.has(n)) known.add(n); }
+	if (!known.size) return slots;
+	const hit = [...known].filter((n) => allowed.has(n)).length;
+	if (hit < known.size * 0.8) return slots;
+	return slots.map((slot) => slot.filter((e) => {
+		if (!e || !(e[1] > 0)) return true;
+		const n = normName(cardName(e[1]));
+		return !official.names.has(n) || allowed.has(n) || PLAIN_STAT.test(n);
+	}));
+}
 export function enchantDetailOf(itemId) {
 	if (enchDetailCache.has(itemId)) return enchDetailCache.get(itemId);
 	const mgr = g_constDataManager.GetDataManger(CONST_DATA_KIND_ENCHANT_LIST);
 	const ids = mgr.GetEnchListIdArrayByItemId(itemId);
 	let all = [[], [], [], []];
 	for (const id of ids) {
-		const a = RebuildCardSelectSubCollectEnchListData(id, all);
+		const a = officialFilter(itemId, RebuildCardSelectSubCollectEnchListData(id, all));
 		for (let s = 0; s < a.length && s < 4; s++) all[s] = all[s].concat(a[s]);
 	}
 	const out = all.map((slot) => {
@@ -296,7 +335,7 @@ export function isTwoHanded(itemId) {
  */
 export async function search(opt) {
 	const { conds, skillLv = {}, lock = {}, ngItems = [], ngCards = [], maxResults = 30, onProgress: report = () => {}, onResults = () => {}, shouldStop = () => false, priceOf = () => null } = opt;
-	await loadHard();
+	await Promise.all([loadHard(), loadOfficial()]);
 	// 全体の進み具合: 候補の確認 0〜75%、組み合わせ探し（見つけたものはその場で実計算して確かめる）75〜100%
 	let phase = [0, 0.75];
 	const onProgress = (text, r) => report(text, Math.min(1, phase[0] + (phase[1] - phase[0]) * Math.max(0, Math.min(1, r))));
@@ -492,11 +531,11 @@ export async function search(opt) {
 				// 同じ性能なら精錬値の低い方が残るように、精錬値ぶんだけ値段を重くして比べる
 				const itemPrice = (priceOf("item", iid) ?? UNKNOWN_PRICE) + lv;
 				for (const v of expandSlots(r, d, slotChoices, priceOf, need, itemPrice)) {
-					variants.push({ region: r, keep: false, itemId: iid, refine: lv, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1, twoHand: r.key === "weapon" && isTwoHanded(iid), usesShield: r.key === "shield" });
+					variants.push({ region: r, keep: false, itemId: iid, refine: lv, selfRel, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1, twoHand: r.key === "weapon" && isTwoHanded(iid), usesShield: r.key === "shield" });
 				}
 			}
 		}
-		regionVariants.push(paretoPrune(variants, need, true).slice(0, 300));
+		regionVariants.push(paretoPrune(variants, need).slice(0, 300));
 		regionCtx.push(ctx);
 	}
 
@@ -612,11 +651,17 @@ export async function search(opt) {
 			if (!v.keep) placeItem(m, r, v.itemId, v.refine ?? 0);
 			for (const [slot, cid] of v.cards) m.card[slot] = cid;
 		}
-		const sig = JSON.stringify([m.equip, m.card]);
+		// 同じ部位の中でエンチャントの並び順だけ違うもの・アクセサリーの左右が入れ替わっただけのものは同じ構成とみなす
+		const part = BF_REGIONS.map((r) => JSON.stringify([m.equip[r.eq] || 0, getRefine(m, r), ...r.slots.map((s) => m.card[s] || 0).sort()]));
+		const sig = part.slice(0, -2).concat(part.slice(-2).sort()).join("|");
 		if (seen.has(sig)) return;
 		seen.add(sig);
+		// 既に見つかった構成に物を足しただけのものは出さない
+		const toks = picks.filter((v) => v.changed).flatMap((v) => [...(v.keep ? [] : [`${v.region.key}:i${v.itemId}:${v.refine ?? 0}`]), ...v.cards.map(([, cid]) => `${v.region.key === "acc2" ? "acc1" : v.region.key}:c${cid}`)]).sort();
+		if (results.some((x) => within(x.toks, toks))) return;
 		const val = evalM(m);
 		if (!meets(val)) return;
+		for (let i = results.length - 1; i >= 0; i--) if (within(toks, results[i].toks)) results.splice(i, 1);
 		const changed = picks.filter((v) => v.changed).map((v) => ({ ...v }));
 		let price = 0, unknown = 0;
 		for (const v of changed) {
@@ -626,7 +671,7 @@ export async function search(opt) {
 			price += pp.price;
 			unknown += pp.unknown;
 		}
-		results.push({ picks: changed, values: val, price, priceUnknown: unknown, changes: f.changes, cost: f.cost, model: m });
+		results.push({ toks, picks: changed, values: val, price, priceUnknown: unknown, changes: f.changes, cost: f.cost, model: m });
 		results.sort(order);
 		if (results.length > maxResults) results.length = maxResults;
 		emit(false);
@@ -740,10 +785,25 @@ function expandSlots(region, d0, slotChoices, priceOf, need, price0) {
 
 export class BfStopped extends Error {}
 
+/** a（並べ替え済み）の中身が全部 b（並べ替え済み）に含まれる（b は a に何か足しただけ） */
+function within(a, b) {
+	let j = 0;
+	for (const x of a) { while (j < b.length && b[j] < x) j++; if (b[j] !== x) return false; j++; }
+	return true;
+}
+
 /** 条件に関係する指標だけで比べ、他より全面的に劣る組を捨てる（値段・個数も比べる） */
-function paretoPrune(list, need, keepTies = false) {
+function paretoPrune(list, need) {
 	const idx = need.map((n, i) => i).filter((i) => need[i] > 0);
 	const cap = (v, i) => Math.min(v.d[i], need[i]);
+	// 中身: 効果を出している物（カード・エンチャントと、装備自体に効果があるならその装備）。
+	// エンチャントを付けるためだけの装備は中身に入れない（同じエンチャントなら安い装備に絞る）
+	const what = (v) => {
+		const w = (v.cards || []).map((c) => "c" + c[1]);
+		if (v.selfRel !== false && v.itemId) w.push("i" + v.itemId);
+		return w.sort();
+	};
+
 	const sorted = list.slice().sort((a, b) => (a.price - b.price) || ((a.count ?? a.cards?.length ?? 0) - (b.count ?? b.cards?.length ?? 0)));
 	const kept = [];
 	outer: for (const v of sorted) {
@@ -753,13 +813,14 @@ function paretoPrune(list, need, keepTies = false) {
 			if (kc > vc) continue;
 			if ((k.changed ?? 0) > (v.changed ?? 0)) continue;
 			if (k.twoHand && !v.twoHand) continue;
-			let dominated = true, strict = k.price < v.price || kc < vc || (k.changed ?? 0) < (v.changed ?? 0);
+			let dominated = true, better = false;
 			for (const i of idx) {
 				if (cap(k, i) < cap(v, i) - 1e-9) { dominated = false; break; }
-				if (cap(k, i) > cap(v, i) + 1e-9) strict = true;
+				if (cap(k, i) > cap(v, i) + 1e-9) better = true;
 			}
-			// 全く同じ条件のものは別の候補として残す（並べて比べられるように）
-			if (dominated && (strict || !keepTies)) continue outer;
+			// 性能で負けているものは捨てる。性能が同じなら、中身が違うもの（同じ耐性に届く別のカードなど）は
+			// 値段が高くても別の候補として残し、中身が同じもの・余計な物を足しただけのものは捨てる
+			if (dominated && (better || within(what(k), what(v)))) continue outer;
 		}
 		kept.push(v);
 	}
