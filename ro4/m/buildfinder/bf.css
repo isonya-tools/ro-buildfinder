@@ -71,7 +71,11 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 
 /* スキル */
 #BF_ROOT .bf-skills { max-height: 460px; overflow: auto; }
-#BF_ROOT .bf-skilltable { border-collapse: collapse; width: 100%; }
+#BF_ROOT .bf-skilltable td:first-child { padding-right: 18px; }
+#BF_ROOT .bf-skilltable { border-collapse: collapse; width: auto; }
+#BF_ROOT .bf-skilladd { margin-top: 6px; max-width: 420px; }
+#BF_ROOT .bf-timeitems { margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
+#BF_ROOT .bf-modes.bf-inline { display: inline-flex; }
 #BF_ROOT .bf-skilltable thead th { position: sticky; top: 0; background: var(--bf-panel2); z-index: 1; font-weight: normal; color: var(--bf-dim); font-size: 12px; padding: 3px 6px; }
 #BF_ROOT .bf-skilltable td { padding: 2px 6px; border-top: 1px solid var(--bf-line); white-space: nowrap; text-align: right; }
 #BF_ROOT .bf-skilltable td.bf-sk-name, #BF_ROOT .bf-skilltable th.bf-sk-name { text-align: left; }
@@ -147,3 +151,4 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 .bf-tip-note { color: var(--bf-dim); font-size: 11px; }
 #BF_ROOT .bf-ngsel .ts-wrapper { min-width: 420px; }
 .CSSCLS_DIV_FLOATING_MENU, .folding-block-MIG { background-color: var(--bf-panel2) !important; color: var(--bf-text) !important; }
+#BF_ROOT .bf-eqtable td.bf-eq-price { text-align: right; color: var(--bf-accent); }

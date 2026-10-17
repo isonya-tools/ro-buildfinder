@@ -125,3 +125,10 @@ export function relevantItemSets(rel) {
 	}
 	return out;
 }
+
+/** 計算処理の中でIDを直接見ている装備か（精錬値で効果が変わるかもしれないもの） */
+export function isHardItem(id) {
+	if (!hard) return false;
+	for (const c of Object.values(hard)) if (c.items?.has(id)) return true;
+	return false;
+}

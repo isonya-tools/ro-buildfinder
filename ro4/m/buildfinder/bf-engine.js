@@ -19,12 +19,13 @@ import { SkillObjNew } from "../../../engine/skill/skill.dat.js";
 import { SKILL_DATA_INDEX_NAME, SKILL_DATA_INDEX_MAXLV } from "../../../engine/const/EnumSkillDataIndex.js";
 import { ITEM_SP_STUFF2HAND as SP_STUFF2HAND } from "../../../engine/const/EnumItemSpId.js";
 import { RebuildCardSelectSubCollectEnchListData } from "../../../engine/equip/hmcard.js";
+import { MIG_BORDER_FLAG_ID_OVER, MIG_BORDER_FLAG_ID_EQUAL } from "../../../engine/const/EnumMigBorderFlagId.js";
 import * as R from "../../../engine/const/EnumEquipRegionId.js";
 import * as K from "../../../engine/const/EnumItemKind.js";
 import * as CK from "../../../engine/const/EnumCardKind.js";
 import * as CR from "../../../engine/runtime/common.js";
 import { readMetrics } from "./bf-metrics.js";
-import { loadHard, makeRelevance, relevantItemSets } from "./bf-relevance.js";
+import { loadHard, makeRelevance, relevantItemSets, isHardItem } from "./bf-relevance.js";
 import * as NE from "../../../engine/equip/item.dat.js";
 
 const IDX_ID = 0, IDX_KIND = 1, IDX_SLOT = 5, IDX_NAME = 8;
@@ -57,6 +58,32 @@ export const BF_REGIONS = [
 
 function getRefine(m, r) { return r.refine === "weapon" ? m.weapon.atkPlus : r.refine ? m.defPlus[r.refine] : 0; }
 function setRefine(m, r, v) { if (r.refine === "weapon") m.weapon.atkPlus = v; else if (r.refine) m.defPlus[r.refine] = v; }
+/**
+ * 入れ替える装備で試す精錬値. +0 に加えて、過剰精錬で効果が変わる値（データの「精錬値◯以上」「精錬1ごと」、
+ * 計算処理が精錬値を見る装備）と、エンチャントの精錬値の条件。精錬できない部位は+0だけ。
+ */
+const refineLevelCache = new Map();
+function refineLevelsOf(r, iid) {
+	if (!r.refine) return [0];
+	const key = r.key + ":" + iid;
+	if (refineLevelCache.has(key)) return refineLevelCache.get(key);
+	const set = new Set([0]);
+	const row = ItemObjNew[iid] || [];
+	for (let i = 11; i + 1 < row.length; i += 2) {
+		const code = row[i];
+		if (typeof code !== "number" || code === 0) break;
+		const x = code % 100000000;
+		const over = Math.floor(x / 1000000);
+		if (over >= 1) { set.add(over); set.add(Math.min(20, over + 1)); }
+		if (Math.floor((x % 1000000) / 100000) >= 1) set.add(10);
+	}
+	if (isHardItem(iid)) for (const v of [7, 9, 10, 11]) set.add(v);
+	for (const m of enchantDetailOf(iid)) for (const need of m.values()) if (need > 0) set.add(need);
+	const out = [...set].filter((v) => v <= 20).sort((a, b) => a - b);
+	refineLevelCache.set(key, out);
+	return out;
+}
+
 /** 部位に装備を置く（カード・エンチャは外し、精錬値は指定値） */
 function placeItem(m, r, iid, refine) {
 	clearRegion(m, r);
@@ -75,8 +102,13 @@ export function cardName(id) { return CardObjNew[id]?.[CIDX_NAME] ?? ""; }
 export function itemSlotCount(id) { return GetMaxSlot(ItemObjNew[id]?.[IDX_SLOT] ?? 0); }
 
 /** 現在の画面の入力からモデルを作る（固定装備・ステータス・支援などすべて） */
+let useTimeItems = false;
+/** アイテム時限効果を計算に入れるか（既定はオフ） */
+export function setUseTimeItems(on) { useTimeItems = !!on; }
 export function modelFromScreen() {
-	return registryGet("extractModelFromDom")();
+	const m = registryGet("extractModelFromDom")();
+	if (!useTimeItems && Array.isArray(m.timeItemConf)) m.timeItemConf = m.timeItemConf.map(() => 0);
+	return m;
 }
 
 function cloneModel(m) {
@@ -154,8 +186,12 @@ export function isRegionEmpty(model, region) {
 	return /装備なし$|^\(?なし\)?$/.test(name) || name === "";
 }
 
-/** エンチャントの候補（スロットごと）を取得する。戻り値: [[cardId...], [cardId...], ...]（4スロット分） */
-export function enchantOptionsOf(itemId) {
+/**
+ * エンチャントの候補（スロットごと）と、付けるのに要る精錬値. 戻り値: [Map(エンチャントID → 必要な精錬値), ...]（4スロット分）
+ */
+const enchDetailCache = new Map();
+export function enchantDetailOf(itemId) {
+	if (enchDetailCache.has(itemId)) return enchDetailCache.get(itemId);
 	const mgr = g_constDataManager.GetDataManger(CONST_DATA_KIND_ENCHANT_LIST);
 	const ids = mgr.GetEnchListIdArrayByItemId(itemId);
 	let all = [[], [], [], []];
@@ -163,11 +199,23 @@ export function enchantOptionsOf(itemId) {
 		const a = RebuildCardSelectSubCollectEnchListData(id, all);
 		for (let s = 0; s < a.length && s < 4; s++) all[s] = all[s].concat(a[s]);
 	}
-	return all.map((slot) => {
-		const set = new Set();
-		for (const e of slot) if (e && e[1] > 0) set.add(e[1]);
-		return [...set];
+	const out = all.map((slot) => {
+		const map = new Map();
+		for (const e of slot) {
+			if (!e || !(e[1] > 0)) continue;
+			const p = e[2] || {};
+			// 精錬値の条件（OVER: 以上、EQUAL: ちょうど）。条件なしは0
+			const need = (p.refinedBorderFlag === MIG_BORDER_FLAG_ID_OVER || p.refinedBorderFlag === MIG_BORDER_FLAG_ID_EQUAL) ? Number(p.refinedBorderBase) || 0 : 0;
+			if (!map.has(e[1]) || need < map.get(e[1])) map.set(e[1], need);
+		}
+		return map;
 	});
+	enchDetailCache.set(itemId, out);
+	return out;
+}
+/** エンチャントの候補（スロットごと）。戻り値: [[cardId...], ...]（4スロット分） */
+export function enchantOptionsOf(itemId) {
+	return enchantDetailOf(itemId).map((m) => [...m.keys()]);
 }
 
 /** 部位ごとの装備候補 */
@@ -312,9 +360,10 @@ export async function search(opt) {
 
 	const regionVariants = [];
 	const regionCtx = [];
-	const slotChoicesFor = async (ctx, iid) => {
+	const slotChoicesFor = async (ctx, iid, lv) => {
 		const nSlot = itemSlotCount(iid);
-		const ench = enchOf(iid);
+		const detail = enchantDetailOf(iid);
+		const ench = enchOf(iid).map((a, s) => a.filter((cid) => (detail[s].get(cid) ?? 0) <= lv));
 		const out = [];
 		for (let s = 0; s < 4; s++) {
 			if (s < nSlot) { out.push(ctx.cardOpts); continue; }
@@ -333,7 +382,6 @@ export async function search(opt) {
 		const r = regions[ri];
 		const curItem = isRegionEmpty(base, r) ? 0 : base.equip[r.eq];
 		const curCards = r.slots.map((s) => base.card[s] || 0);
-		const curRefine = getRefine(base, r);
 		onProgress(`${r.label}：確認中`, done / totalWork);
 
 		// 部位を空にした状態（入れ替え時のカード・エンチャの差分の基準）
@@ -369,7 +417,8 @@ export async function search(opt) {
 		// b) 今の装備のまま、カード・エンチャだけ変える
 		if (curItem) {
 			const nSlot = itemSlotCount(curItem);
-			const ench = enchOf(curItem);
+			const curDetail = enchantDetailOf(curItem);
+			const ench = enchOf(curItem).map((a, s) => a.filter((cid) => (curDetail[s].get(cid) ?? 0) <= getRefine(base, r)));
 			const slotChoices = [];
 			for (let s = 0; s < 4; s++) {
 				const opts = [];
@@ -407,14 +456,22 @@ export async function search(opt) {
 			done++;
 			if (done % 10 === 0) onProgress(`${r.label}：装備を確認中（${itemName(iid)}）`, done / totalWork);
 			if (iid === curItem) continue;
-			const m = cloneModel(cleared);
-			placeItem(m, r, iid, curRefine);
-			const d = vecFrom(evalM(m), baseVal);
-			const slotChoices = await slotChoicesFor(ctx, iid);
-			if (!relevant(d) && !slotChoices.some((o) => o.length)) continue;
-			const itemPrice = priceOf("item", iid) ?? 0;
-			for (const v of expandSlots(r, d, slotChoices, priceOf, need, itemPrice)) {
-				variants.push({ region: r, keep: false, itemId: iid, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1, twoHand: r.key === "weapon" && isTwoHanded(iid), usesShield: r.key === "shield" });
+			// 精錬値は+0が基本。過剰精錬で効果が変わるとき・エンチャントに精錬値の条件があるときだけ、その精錬値も候補にする
+			let prevD = null, prevEnch = -1;
+			for (const lv of refineLevelsOf(r, iid)) {
+				const m = cloneModel(cleared);
+				placeItem(m, r, iid, lv);
+				const d = vecFrom(evalM(m), baseVal);
+				const slotChoices = await slotChoicesFor(ctx, iid, lv);
+				const nEnch = slotChoices.reduce((a, o) => a + o.length, 0);
+				if (prevD && nEnch === prevEnch && d.every((x, i) => Math.abs(x - prevD[i]) < 1e-9)) continue;
+				prevD = d; prevEnch = nEnch;
+				if (!relevant(d) && !slotChoices.some((o) => o.length)) continue;
+				// 同じ性能なら精錬値の低い方が残るように、精錬値ぶんだけ値段を重くして比べる
+				const itemPrice = (priceOf("item", iid) ?? 0) + lv;
+				for (const v of expandSlots(r, d, slotChoices, priceOf, need, itemPrice)) {
+					variants.push({ region: r, keep: false, itemId: iid, refine: lv, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1, twoHand: r.key === "weapon" && isTwoHanded(iid), usesShield: r.key === "shield" });
+				}
 			}
 		}
 		regionVariants.push(paretoPrune(variants, need, true).slice(0, 300));
@@ -447,9 +504,20 @@ export async function search(opt) {
 		if (!ok || assign.every((a) => a.already)) continue;
 		const wpn = assign.find((a) => a.region.key === "weapon" && !a.already);
 		if (wpn && isTwoHanded(wpn.itemId) && (assign.some((a) => a.region.key === "shield") || (shieldLocked && baseShield))) continue;
-		const m = cloneModel(base);
-		for (const a of assign) if (!a.already) placeItem(m, a.region, a.itemId, getRefine(base, a.region));
-		const d = vecFrom(evalM(m), baseVal);
+		// セットのメンバーも+0から。効果が出なければ、各メンバーを候補の中で一番高い精錬値にして確かめる
+		let d = null;
+		for (const top of [false, true]) {
+			const m = cloneModel(base);
+			for (const a of assign) {
+				if (a.already) continue;
+				const lvs = refineLevelsOf(a.region, a.itemId);
+				a.refine = top ? lvs[lvs.length - 1] : 0;
+				placeItem(m, a.region, a.itemId, a.refine);
+			}
+			d = vecFrom(evalM(m), baseVal);
+			if (relevant(d)) break;
+			if (!assign.some((a) => !a.already && refineLevelsOf(a.region, a.itemId).length > 1)) break;
+		}
 		if (!relevant(d)) continue;
 		const inDfs = assign.filter((a) => regionIndex.has(a.region.key)).sort((a, b) => regionIndex.get(a.region.key) - regionIndex.get(b.region.key));
 		const pkg = { id: S.setIndex, src: S.src, regions: inDfs.map((a) => regionIndex.get(a.region.key)), members: S.members };
@@ -460,9 +528,9 @@ export async function search(opt) {
 			let vs;
 			if (a.already) vs = ctx.keepVariants.map((v) => ({ ...v }));
 			else {
-				const slotChoices = await slotChoicesFor(ctx, a.itemId);
+				const slotChoices = await slotChoicesFor(ctx, a.itemId, a.refine);
 				vs = expandSlots(a.region, zero(), slotChoices, priceOf, need, priceOf("item", a.itemId) ?? 0).map((v) => ({
-					region: a.region, keep: false, itemId: a.itemId, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1,
+					region: a.region, keep: false, itemId: a.itemId, refine: a.refine, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1,
 					twoHand: a.region.key === "weapon" && isTwoHanded(a.itemId), usesShield: a.region.key === "shield",
 				}));
 			}
@@ -538,7 +606,7 @@ export async function search(opt) {
 		for (const v of f.picks) {
 			if (!v.changed) continue;
 			const r = v.region;
-			if (!v.keep) placeItem(m, r, v.itemId, getRefine(base, r));
+			if (!v.keep) placeItem(m, r, v.itemId, v.refine ?? 0);
 			for (const [slot, cid] of v.cards) m.card[slot] = cid;
 		}
 		const sig = JSON.stringify([m.equip, m.card]);
@@ -546,10 +614,47 @@ export async function search(opt) {
 		seen.add(sig);
 		const val = evalM(m);
 		if (!meets(val)) continue;
-		results.push({ picks: f.picks.filter((v) => v.changed), values: val, price: costOf(f), changes: changesOf(f), model: m });
+		const picks = f.picks.filter((v) => v.changed);
+		let price = 0, unknown = 0;
+		for (const v of picks) {
+			const pp = pickPrice(v, priceOf);
+			v.finalPrice = pp.price;
+			v.priceUnknown = pp.unknown;
+			price += pp.price;
+			unknown += pp.unknown;
+		}
+		results.push({ picks, values: val, price, priceUnknown: unknown, changes: changesOf(f), model: m });
 		onProgress(`確認中：${results.length}件見つかりました`, 1);
 	}
 	return { results, baseVal, base, candidates: found.length, stats: { items: regionItems.reduce((a, l) => a + l.length, 0), cards: regionCards.reduce((a, l) => a + l.length, 0), sets: sets.length, packages: pkgCount } };
+}
+
+/**
+ * 結果1部位ぶんの値段. 入れ替える装備は、選んだエンチャントが付いた取引の値段（無ければ装備だけの値段）。
+ * カードは1枚ずつの値段を足す。今の装備に付けるエンチャントは値段に入れない。
+ * @returns {{price: number, unknown: number}} unknown: 値段が分からなかった物の数
+ */
+function pickPrice(v, priceOf) {
+	let price = 0, unknown = 0;
+	const ench = v.cards.filter(([, cid]) => isEnchant(cid)).map(([, cid]) => cid);
+	if (!v.keep) {
+		// 精錬値・エンチャントが合う取引の値段。精錬なし・エンチャなしなら装備だけの値段
+		let p = (ench.length || v.refine) ? priceOf("itemEnch", v.itemId, ench, v.refine || 0) : null;
+		if (p == null && !v.refine) p = priceOf("item", v.itemId);
+		if (p == null && ench.length) {
+			// そのエンチャントの付いた取引が無いときは、装備（その精錬値以上）の値段だけ入れて、エンチャ分は不明にする
+			const p2 = v.refine ? priceOf("itemEnch", v.itemId, [], v.refine) : priceOf("item", v.itemId);
+			if (p2 != null) price += p2;
+			unknown++;
+		} else if (p == null) unknown++;
+		else price += p;
+	}
+	for (const [, cid] of v.cards) {
+		if (isEnchant(cid)) continue;
+		const p = priceOf("card", cid);
+		if (p == null) unknown++; else price += p;
+	}
+	return { price, unknown };
 }
 
 /** 部位の4枠（カード＋エンチャ3枠）の選び方を展開する（劣るものは途中で捨てる） */
@@ -562,7 +667,7 @@ function expandSlots(region, d0, slotChoices, priceOf, need, price0) {
 		for (const pv of partial) {
 			next.push(pv);
 			for (const o of opts) {
-				next.push({ cards: [...pv.cards, [region.slots[s], o.id]], d: pv.d.map((x, i) => x + o.d[i]), price: pv.price + (priceOf("card", o.id) ?? 0) });
+				next.push({ cards: [...pv.cards, [region.slots[s], o.id]], d: pv.d.map((x, i) => x + o.d[i]), price: pv.price + (isEnchant(o.id) ? 0 : priceOf("card", o.id) ?? 0) });
 			}
 		}
 		partial = paretoPrune(next, need);

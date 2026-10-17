@@ -4,6 +4,7 @@
  */
 import { n_A_Kotei_Cast_Keigen } from "../../../engine/runtime/ro4-state.js";
 import { n_A_DEX, n_A_INT, n_CastCutForDisp, n_A_BodyZokusei, n_A_Equip, n_A_card } from "../../../engine/runtime/roro-state.js";
+import { bfDelayReductionRaw } from "../../../engine/status/cast-delay.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
 import { CardObjNew } from "../../../engine/equip/card.dat.js";
 import * as CI from "../../../engine/const/EnumCharaDataIndex.js";
@@ -40,16 +41,17 @@ add("hit", "HIT", "基本", "", (r) => r.charaData[CI.CHARA_DATA_INDEX_HIT]);
 add("flee", "FLEE", "基本", "", (r) => r.charaData[CI.CHARA_DATA_INDEX_FLEE]);
 add("lucky", "完全回避", "基本", "", (r) => r.charaData[CI.CHARA_DATA_INDEX_LUCKY]);
 add("cri", "クリティカル", "基本", "", (r) => r.charaData[CI.CHARA_DATA_INDEX_CRI]);
-add("castStat", "変動詠唱（ステータス）", "基本", "", () => Math.max(0, n_A_DEX) + Math.max(0, n_A_INT) / 2);
+add("castStat", "変動詠唱（INT/2+DEX）", "基本", "", () => Math.max(0, n_A_DEX) + Math.max(0, n_A_INT) / 2);
 add("castGear", "変動詠唱（装備）", "基本", "%", () => 100 - n_CastCutForDisp);
 add("castFixed", "固定詠唱 短縮", "基本", "%", () => Math.round(n_A_Kotei_Cast_Keigen * 100) / 100);
-add("delay", "ディレイ 短縮", "基本", "%", (r) => r.specData[SP.ITEM_SP_SKILL_DELAY_DOWN]);
+add("delay", "ディレイ 短縮", "基本", "%", () => bfDelayReductionRaw);
 const sp = (r, ...ids) => ids.reduce((a, id) => a + (Number(r.specData[id]) || 0), 0);
 add("ignDefN", "DEF無視（一般）", "基本", "%", (r) => sp(r, SP.ITEM_SP_IGNORE_DEF_ALL, SP.ITEM_SP_IGNORE_DEF_NOTBOSS, SP.ITEM_SP_IGNORE_DEF_RACE_ALL));
 add("ignDefB", "DEF無視（ボス）", "基本", "%", (r) => sp(r, SP.ITEM_SP_IGNORE_DEF_ALL, SP.ITEM_SP_IGNORE_DEF_BOSS, SP.ITEM_SP_IGNORE_DEF_RACE_ALL));
 add("ignMdefN", "MDEF無視（一般）", "基本", "%", (r) => sp(r, SP.ITEM_SP_IGNORE_MDEF_ALL, SP.ITEM_SP_IGNORE_MDEF_NOTBOSS, SP.ITEM_SP_IGNORE_MDEF_RACE_ALL));
 add("ignMdefB", "MDEF無視（ボス）", "基本", "%", (r) => sp(r, SP.ITEM_SP_IGNORE_MDEF_ALL, SP.ITEM_SP_IGNORE_MDEF_BOSS, SP.ITEM_SP_IGNORE_MDEF_RACE_ALL));
-add("kiri", "錐効果", "基本", "", (r) => sp(r, SP.ITEM_SP_KIRI_EFFECT));
+add("kiri", "錐効果", "基本", "", (r) => sp(r, SP.ITEM_SP_KIRI_EFFECT) > 0 ? 1 : 0);
+BF_METRICS[BF_METRICS.length - 1].kind = "bool";
 add("perfect", "必中", "基本", "%", (r) => sp(r, SP.ITEM_SP_PERFECT_ATTACK_UP));
 add("refresh", "リフレ状態", "基本", "個", () => refreshCount());
 add("bodyElm", "鎧の属性", "基本", "", () => n_A_BodyZokusei);

@@ -5,7 +5,7 @@
  */
 import {
 	BF_REGIONS, search, evalModel, skillTimes, nakedModel, modelFromScreen, attackSkillsOf,
-	itemName, cardName, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped,
+	itemName, cardName, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped, setUseTimeItems,
 } from "./bf-engine.js";
 import { BF_METRICS, BF_GROUPS, BF_METRIC_BY_KEY, ELM_NAMES } from "./bf-metrics.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
@@ -13,7 +13,6 @@ import { loadPrices, priceOfFactory } from "./bf-price.js";
 import { applyModelToScreen } from "./bf-apply.js";
 
 const COOKIE = "bf_conf";
-const PRICE_WORLD = "Noatun"; // 値段はN鯖のものだけを使う
 const h = (tag, attrs = {}, ...kids) => {
 	const e = document.createElement(tag);
 	for (const [k, v] of Object.entries(attrs)) {
@@ -31,7 +30,7 @@ const numOrNull = (s) => {
 	const t = String(s ?? "").trim().replace(/[０-９．－]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
 	return t === "" || !Number.isFinite(Number(t)) ? null : Number(t);
 };
-const fmtMetric = (m, v) => m.kind === "elm" ? (ELM_NAMES[v] ?? "—") : fmtNum(v) + (m.unit || "");
+const fmtMetric = (m, v) => m.kind === "elm" ? (ELM_NAMES[v] ?? "—") : m.kind === "bool" ? (v ? "あり" : "なし") : fmtNum(v) + (m.unit || "");
 
 /** 数値の入力欄（上下の矢印なし）と、中身を消す✕ボタン */
 function numInput(value, onChange, attrs = {}) {
@@ -45,6 +44,8 @@ function numInput(value, onChange, attrs = {}) {
 const defaultConf = () => ({
 	targets: {},      // 指標キー -> 目標値
 	skillTargets: {}, // skillId -> {cf: 短縮ms, ct: 短縮ms}
+	skillShown: [],   // スキル欄に出すスキル
+	timeItems: false, // アイテム時限効果を計算に入れるか
 	enchRows: null,   // [[エンチャントID, 目標の個数 or null]]（null なら今付いているものを入れる）
 	enchRemoved: [],  // 一覧から外したエンチャント（今付いていても自動では入れ直さない）
 	regionMode: {},   // regionKey -> "free" | "keep" | "lock"
@@ -105,14 +106,14 @@ function showTip(e, content) {
 function hideTip() { if (tip) tip.style.display = "none"; }
 
 // ---- 画面 ----
-let root, stateBox, enchBox, skillBox, regionBox, ngBox, progressBox, resultBox, searchBtn, stopBtn;
+let root, timeBox, stateBox, enchBox, skillBox, regionBox, ngBox, progressBox, resultBox, searchBtn, stopBtn;
 let lastResults = null, stopFlag = false, running = false, prices = null, lastModel = null, skillList = [];
 
 export async function initBuildFinder(container) {
 	loadConf();
 	root = container;
 	root.append(
-		section("今の状態と目標", h("div", {}, stateBox = h("div", { class: "bf-state" }), enchBox = h("div", { class: "bf-enchrows" }))),
+		section("今の状態と目標", h("div", {}, timeBox = h("div", { class: "bf-timeitems" }), stateBox = h("div", { class: "bf-state" }), enchBox = h("div", { class: "bf-enchrows" }))),
 		section("スキル", skillBox = h("div", { class: "bf-skills" })),
 		section("部位ごとの設定", regionBox = h("table", { class: "bf-regions" })),
 		section("除外装備", buildNg()),
@@ -120,6 +121,8 @@ export async function initBuildFinder(container) {
 		resultBox = h("div", { class: "bf-results" }),
 		licenseNote(),
 	);
+	setUseTimeItems(conf.timeItems);
+	renderTimeItems();
 	[prices] = await Promise.all([loadPrices(), loadSkillInfo()]);
 	refreshAll();
 	let timer = 0;
@@ -154,6 +157,14 @@ function refreshAll() {
 	renderSkills(model);
 }
 
+// ---- アイテム時限効果（既定はオフ） ----
+function renderTimeItems() {
+	timeBox.replaceChildren("アイテム時限効果: ", h("span", { class: "bf-modes bf-inline" }, [[false, "オフ"], [true, "オン"]].map(([v, label]) =>
+		h("button", { type: "button", class: "bf-mode" + (conf.timeItems === v ? " on" : ""), onclick: () => {
+			conf.timeItems = v; saveConf(); setUseTimeItems(v); renderTimeItems(); refreshAll();
+		} }, label))));
+}
+
 // ---- 今の状態と目標 ----
 function metricGroupsTable(val, opts = {}) {
 	const { withTarget = false, before = null } = opts;
@@ -184,6 +195,12 @@ function targetInput(m) {
 		const t = conf.targets[m.key];
 		const sel = h("select", { class: "bf-target", onchange: () => set(sel.value === "" ? null : Number(sel.value)) },
 			h("option", { value: "" }, "—"), ELM_NAMES.map((n, i) => h("option", { value: i, selected: t === i }, n)));
+		return h("span", { class: "bf-numwrap" }, sel, h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => set(null) }, "✕"));
+	}
+	if (m.kind === "bool") {
+		const t = conf.targets[m.key];
+		const sel = h("select", { class: "bf-target", onchange: () => set(sel.value === "" ? null : 1) },
+			h("option", { value: "" }, "—"), h("option", { value: "1", selected: t === 1 }, "あり"));
 		return h("span", { class: "bf-numwrap" }, sel, h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => set(null) }, "✕"));
 	}
 	return numInput(conf.targets[m.key], set);
@@ -247,22 +264,47 @@ function enchRow(row, i, counts) {
 }
 
 // ---- スキル ----
-let skillRenderToken = 0;
+let skillRenderToken = 0, skillTs = null;
 async function renderSkills(model) {
 	const token = ++skillRenderToken;
 	skillList = attackSkillsOf(model.status.jobId).filter(([id]) => id !== 0).reverse();
+	if (skillTs) { try { skillTs.destroy(); } catch { /* 済み */ } skillTs = null; }
 	if (!skillList.length) { skillBox.replaceChildren(h("p", { class: "bf-zero" }, "職業を選択してください")); return; }
+	// 一覧に出すのは選んだスキルだけ（目標が入っているものも出す）
+	const ids = new Set(skillList.map(([id]) => id));
+	conf.skillShown = (conf.skillShown || []).filter((id) => ids.has(id));
+	for (const id of Object.keys(conf.skillTargets).map(Number)) if (ids.has(id) && !conf.skillShown.includes(id)) conf.skillShown.push(id);
+	const shown = skillList.filter(([id]) => conf.skillShown.includes(id));
+
+	const sel = h("select", {}, h("option", { value: "" }, ""));
+	const adder = h("div", { class: "bf-skilladd" }, sel);
+	queueMicrotask(() => {
+		if (!window.TomSelect) return;
+		skillTs = new window.TomSelect(sel, {
+			options: skillList.filter(([id]) => !conf.skillShown.includes(id)).map(([id, name]) => ({ value: String(id), text: name })),
+			maxOptions: 300, placeholder: "スキルを追加（名前を入力）", allowEmptyOption: true,
+			onChange: (v) => {
+				const id = Number(v) || 0;
+				if (!id) return;
+				conf.skillShown.push(id);
+				saveConf();
+				setTimeout(() => renderSkills(lastModel), 0);
+			},
+		});
+	});
+	if (!shown.length) { skillBox.replaceChildren(adder); return; }
+
 	const naked = nakedModel(model);
 	const table = h("table", { class: "bf-skilltable" },
 		h("thead", {}, h("tr", {},
 			h("th", { class: "bf-sk-name" }, "スキル"),
 			h("th", {}, "固定詠唱"), h("th", {}, "装備での短縮"), h("th", {}, "目標の短縮"),
-			h("th", {}, "CT"), h("th", {}, "装備での短縮"), h("th", {}, "目標の短縮"))));
+			h("th", {}, "CT"), h("th", {}, "装備での短縮"), h("th", {}, "目標の短縮"), h("th", {}))));
 	const tbody = h("tbody");
 	table.append(tbody);
-	skillBox.replaceChildren(table);
+	skillBox.replaceChildren(table, adder);
 	const cells = [];
-	for (const [id, name, maxLv] of skillList) {
+	for (const [id, name, maxLv] of shown) {
 		const info = skillInfoOf(name);
 		const tgt = conf.skillTargets[id] || {};
 		const nameEl = h("span", { class: "bf-sk-label" }, name);
@@ -277,11 +319,16 @@ async function renderSkills(model) {
 			if (t.cf == null && t.ct == null) delete conf.skillTargets[id];
 			saveConf();
 		});
+		const del = h("button", { type: "button", class: "bf-clear", title: "一覧から消す", onclick: () => {
+			conf.skillShown = conf.skillShown.filter((x) => x !== id);
+			delete conf.skillTargets[id];
+			saveConf(); renderSkills(lastModel);
+		} }, "✕");
 		const c = { cf: h("td", { class: "bf-cur" }, "…"), cfr: h("td", { class: "bf-cur" }, "…"), ct: h("td", { class: "bf-cur" }, "…"), ctr: h("td", { class: "bf-cur" }, "…") };
 		tbody.append(h("tr", { class: tgt.cf != null || tgt.ct != null ? "bf-sk-on" : "" },
 			h("td", { class: "bf-sk-name" }, link, nameEl),
 			c.cf, c.cfr, h("td", {}, "−", mk("cf"), "ms"),
-			c.ct, c.ctr, h("td", {}, "−", mk("ct"), "ms")));
+			c.ct, c.ctr, h("td", {}, "−", mk("ct"), "ms"), h("td", {}, del)));
 		cells.push([id, maxLv, c]);
 	}
 	// 計算は1スキルずつ（画面が固まらないように間をあける）
@@ -407,7 +454,7 @@ async function runSearch() {
 			keepItem: BF_REGIONS.filter((r) => conf.regionMode[r.key] === "keep").map((r) => r.key),
 			ngItems: conf.ngItems, ngCards: conf.ngCards,
 			maxResults: conf.maxResults,
-			priceOf: priceOfFactory(prices, PRICE_WORLD),
+			priceOf: priceOfFactory(prices),
 			onProgress: (text, ratio) => { progressBox.textContent = `${text}（${Math.round(ratio * 100)}%）`; },
 			shouldStop: () => stopFlag,
 		});
@@ -456,17 +503,22 @@ function resultRow(r, i) {
 	} },
 	h("span", { class: "bf-res-no" }, "#" + (i + 1)),
 	h("span", { class: "bf-res-chg" }, `${r.changes}か所`),
-	h("span", { class: "bf-res-price" }, r.price > 0 ? fmtZeny(r.price) : "値段不明"),
+	h("span", { class: "bf-res-price" }, priceText(r)),
 	h("span", { class: "bf-res-new" }, things.map((t) => t.label).join("、") || "（付け替えなし）"));
 	row.append(line, detail);
 	return row;
+}
+function priceText(r) {
+	if (!r.priceUnknown) return fmtZeny(r.price);
+	if (!r.price) return "値段不明";
+	return fmtZeny(r.price) + "＋不明" + r.priceUnknown;
 }
 function resultDetail(r) {
 	const { base, baseVal } = lastResults;
 	const m = r.model;
 	const changedRegions = new Set(r.picks.map((pk) => pk.region.key));
 	const table = h("table", { class: "bf-eqtable" },
-		h("tr", {}, h("th", {}, "部位"), h("th", {}, "装備"), h("th", {}, "カード／エンチャント 1"), h("th", {}, "2"), h("th", {}, "3"), h("th", {}, "4")));
+		h("tr", {}, h("th", {}, "部位"), h("th", {}, "装備"), h("th", {}, "カード／エンチャント 1"), h("th", {}, "2"), h("th", {}, "3"), h("th", {}, "4"), h("th", {}, "値段")));
 	for (const reg of BF_REGIONS) {
 		const iid = m.equip[reg.eq];
 		const empty = isRegionEmpty(m, reg);
@@ -482,7 +534,8 @@ function resultDetail(r) {
 			const hit = cid !== (base.card[s] || 0);
 			return h("td", { class: hit ? "bf-hit" : "" }, cid ? [cardName(cid), hit ? ngButton("card", cid) : null] : h("span", { class: "bf-zero" }, "—"));
 		});
-		table.append(h("tr", { class: changedRegions.has(reg.key) ? "bf-eq-changed" : "" }, h("th", {}, reg.label), itemCell, cardCells));
+		const priceCell = h("td", { class: "bf-eq-price" }, pk ? (pk.priceUnknown ? (pk.finalPrice ? fmtZeny(pk.finalPrice) + "＋不明" : "不明") : fmtZeny(pk.finalPrice)) : "");
+		table.append(h("tr", { class: changedRegions.has(reg.key) ? "bf-eq-changed" : "" }, h("th", {}, reg.label), itemCell, cardCells, priceCell));
 	}
 	const applyBtn = h("button", { type: "button", class: "bf-go bf-apply", onclick: () => {
 		applyBtn.disabled = true;
