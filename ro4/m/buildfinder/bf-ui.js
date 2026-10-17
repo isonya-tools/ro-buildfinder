@@ -150,7 +150,7 @@ function section(title, body) {
 
 function licenseNote() {
 	return h("p", { class: "bf-license" },
-		"RO BuildFinder は ",
+		"RO装備シミュレーター は ",
 		h("a", { href: "https://github.com/roratorio-hub/ratorio", target: "_blank", rel: "noopener" }, "ラトリオHUB"),
 		" の計算部分を使って作っています（非営利・",
 		h("a", { href: "https://polyformproject.org/licenses/noncommercial/1.0.0", target: "_blank", rel: "noopener" }, "PolyForm Noncommercial 1.0.0"),
@@ -501,11 +501,6 @@ async function runSearch() {
 	if (running) return;
 	const { conds, skillLv } = buildConds();
 	if (!conds.length) { progressBox.textContent = "目標を1つ以上入れてください。"; return; }
-	const over = conds.filter((c) => BF_METRIC_BY_KEY[c.key]?.max != null && c.target > BF_METRIC_BY_KEY[c.key].max);
-	if (over.length) {
-		progressBox.textContent = over.map((c) => `${c.label}の耐性は${BF_METRIC_BY_KEY[c.key].max}%が上限のため、${c.target}%にはできません。`).join(" ");
-		return;
-	}
 	running = true; stopFlag = false;
 	searchBtn.disabled = true; stopBtn.disabled = false;
 	resultBox.replaceChildren();

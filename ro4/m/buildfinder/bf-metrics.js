@@ -2,7 +2,7 @@
  * 装備シミュで条件に使える指標の定義と、計算結果からの読み取り.
  * 値はラトリオの「アイテム情報」欄と同じところから読む。
  */
-import { n_A_Kotei_Cast_Keigen } from "../../../engine/runtime/ro4-state.js";
+import { n_A_Kotei_Cast_Keigen, n_tok_no_limit } from "../../../engine/runtime/ro4-state.js";
 import { n_A_DEX, n_A_INT, n_CastCutForDisp, n_A_BodyZokusei, n_A_Equip, n_A_card } from "../../../engine/runtime/roro-state.js";
 import { bfDelayReductionRaw } from "../../../engine/status/cast-delay.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
@@ -57,17 +57,15 @@ add("refresh", "リフレ状態", "基本", "個", () => refreshCount());
 add("bodyElm", "鎧の属性", "基本", "", () => n_A_BodyZokusei);
 BF_METRICS[BF_METRICS.length - 1].kind = "elm";
 
-ELM.forEach((n, i) => add("resElm" + i, n + "属性", "属性耐性", "%", (r) => r.specData[SP.ITEM_SP_RESIST_ELM_VANITY + i]));
-ABN.forEach((n, i) => add("resAbn" + i, n, "状態異常耐性", "%", (r) => r.specData[SP.ITEM_SP_RESIST_STATE_POISON + i]));
-add("resBoss", "ボス", "その他の耐性", "%", (r) => r.specData[SP.ITEM_SP_RESIST_BOSS]);
-add("resNotBoss", "一般", "その他の耐性", "%", (r) => r.specData[SP.ITEM_SP_RESIST_NOTBOSS]);
-add("resLong", "遠距離", "その他の耐性", "%", (r) => r.specData[SP.ITEM_SP_RESIST_LONGRANGE]);
-add("resPlayer", "プレイヤー", "その他の耐性", "%", (r) => r.specData[SP.ITEM_SP_RESIST_PLAYER_ALL]);
-RACE.forEach((n, i) => add("resRace" + i, n, "モンスター耐性", "%", (r) => r.specData[SP.ITEM_SP_RESIST_RACE_SOLID + i]));
-SIZE.forEach((n, i) => add("resSize" + i, n, "モンスター耐性", "%", (r) => r.specData[SP.ITEM_SP_RESIST_SIZE_SMALL + i]));
-
-// 属性・種族・サイズ・ボス/一般・遠距離・プレイヤーの耐性は、計算上95%が上限（Lv200解放アップデート）
-for (const m of BF_METRICS) if (/^res(Elm|Boss|NotBoss|Long|Player|Race|Size)/.test(m.key)) m.max = 95;
+// 耐性は計算上95%で切られるが、相手のデバフで下がる分も見込めるように、切る前の値で比べる
+ELM.forEach((n, i) => add("resElm" + i, n + "属性", "属性耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_ELM_VANITY + i]));
+ABN.forEach((n, i) => add("resAbn" + i, n, "状態異常耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_STATE_POISON + i]));
+add("resBoss", "ボス", "その他の耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_BOSS]);
+add("resNotBoss", "一般", "その他の耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_NOTBOSS]);
+add("resLong", "遠距離", "その他の耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_LONGRANGE]);
+add("resPlayer", "プレイヤー", "その他の耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_PLAYER_ALL]);
+RACE.forEach((n, i) => add("resRace" + i, n, "モンスター耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_RACE_SOLID + i]));
+SIZE.forEach((n, i) => add("resSize" + i, n, "モンスター耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_SIZE_SMALL + i]));
 
 export const BF_METRIC_BY_KEY = Object.fromEntries(BF_METRICS.map((m) => [m.key, m]));
 
