@@ -640,7 +640,8 @@ async function runSearch() {
 		});
 		lastResults = { ...res, conds };
 		const sec = Math.round((performance.now() - t0) / 1000);
-		progressBox.textContent = res.results.length ? `${res.results.length}件見つかりました（${sec}秒）` : `条件を満たす構成は見つかりませんでした（${sec}秒）`;
+		const why = res.stats?.unreachable?.length ? `。どう組み合わせても届かない条件: ${res.stats.unreachable.join("、")}` : "";
+		progressBox.textContent = res.results.length ? `${res.results.length}件見つかりました（${sec}秒）` : `条件を満たす構成は見つかりませんでした（${sec}秒）${why}`;
 		renderResults();
 	} catch (e) {
 		if (e instanceof BfStopped) progressBox.textContent = "";

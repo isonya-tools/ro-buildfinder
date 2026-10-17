@@ -351,8 +351,22 @@ export async function search(opt) {
 	const rel = makeRelevance(keys);
 	const nakedM = nakedModel(base);
 	const naked = Object.fromEntries(skills.map((sk) => [sk.id, skillTimes(nakedM, sk.id, sk.lv)]));
-	const evalM = (m) => evalAll(m, skills, naked, cards, elms);
+	// スキルの固定詠唱・CTは戦闘計算まで回すので重い（1スキルで本体の計算の1.5倍ほど）。
+	// 入れ替える物がスキルの短縮に関係しないときは計算せず、ref（比べる元）の値をそのまま使う
+	const skKeys = keys.filter((k) => k.startsWith("sk:"));
+	const relSk = skills.length ? makeRelevance(skKeys) : null;
+	const evalM = (m, ref = null) => {
+		let r;
+		if (ref && skills.length) {
+			r = evalAll(m, [], naked, cards, elms);
+			for (const k of skKeys) r[k] = ref[k];
+			for (const sk of skills) r[`skraw:${sk.id}`] = ref[`skraw:${sk.id}`];
+		} else r = evalAll(m, skills, naked, cards, elms);
+		return r;
+	};
+	const skRef = (isRel, ref) => (relSk && !isRel ? ref : null);
 	const meets = (val) => conds.every((c) => val[c.key] - c.target >= -1e-9);
+	const coreKeys = conds.filter((c) => !c.key.startsWith("sk:"));
 
 	const baseVal = evalM(base);
 	const need = conds.map((c) => c.target - baseVal[c.key]);
@@ -446,7 +460,7 @@ export async function search(opt) {
 			if (!cardDelta.has(key)) {
 				const m = cloneModel(cleared);
 				m.card[r.slots[s]] = cid;
-				cardDelta.set(key, vecFrom(evalM(m), clearedVal));
+				cardDelta.set(key, vecFrom(evalM(m, skRef(relSk?.card(cid), clearedVal)), clearedVal));
 			}
 			return cardDelta.get(key);
 		};
@@ -481,7 +495,7 @@ export async function search(opt) {
 					if (curCards[s] && cardOpts.length) {
 						const m0 = cloneModel(base);
 						m0.card[r.slots[s]] = 0;
-						removeD = vecFrom(evalM(m0), baseVal);
+						removeD = vecFrom(evalM(m0, skRef(relSk?.card(curCards[s]), baseVal)), baseVal);
 					}
 					for (const o of cardOpts) if (o.id !== curCards[s]) opts.push({ id: o.id, d: o.d.map((x, i) => x + removeD[i]) });
 				} else {
@@ -490,7 +504,7 @@ export async function search(opt) {
 						await tick();
 						const m = cloneModel(base);
 						m.card[r.slots[s]] = cid;
-						const d = vecFrom(evalM(m), baseVal);
+						const d = vecFrom(evalM(m, skRef(relSk?.card(cid), baseVal)), baseVal);
 						if (relevant(d)) opts.push({ id: cid, d });
 					}
 				}
@@ -521,7 +535,7 @@ export async function search(opt) {
 				if (selfRel) {
 					const m = cloneModel(cleared);
 					placeItem(m, r, iid, lv);
-					d = vecFrom(evalM(m), baseVal);
+					d = vecFrom(evalM(m, skRef(relSk?.item(iid), clearedVal)), baseVal);
 				}
 				const slotChoices = await slotChoicesFor(ctx, iid, lv);
 				const nEnch = slotChoices.reduce((a, o) => a + o.length, 0);
@@ -626,6 +640,8 @@ export async function search(opt) {
 		});
 	}
 	const upper = (i, k, b) => { const pre = topSum[i][k]; return pre[Math.min(b, pre.length - 1)]; };
+	// 全部の部位で一番伸びるものを選んでも届かない条件（足し算の見込み）。結果が0件のときに知らせる
+	const unreachable = conds.filter((c, k) => upper(0, k, n) < need[k] - 1e-9).map((c) => c.label || c.key);
 
 	// 見つけた組み合わせは、その場で実計算で確かめて結果に入れる（onResults で途中経過を返す）
 	const costOf = (f) => f.picks.reduce((a, v) => a + v.price, 0);
@@ -657,6 +673,11 @@ export async function search(opt) {
 		// 既に見つかった構成に物を足しただけのものは出さない
 		const toks = picks.filter((v) => v.changed).flatMap((v) => [...(v.keep ? [] : [`${v.region.key}:i${v.itemId}:${v.refine ?? 0}`]), ...v.cards.map(([, cid]) => `${v.region.key === "acc2" ? "acc1" : v.region.key}:c${cid}`)]).sort();
 		if (results.some((x) => within(x.toks, toks))) return;
+		// まず本体の計算だけで、スキル以外の条件を満たすか確かめる（スキルの計算は重いので後回し）
+		if (skills.length) {
+			const core = evalAll(m, [], naked, cards, elms);
+			if (!coreKeys.every((c) => core[c.key] - c.target >= -1e-9)) return;
+		}
 		const val = evalM(m);
 		if (!meets(val)) return;
 		for (let i = results.length - 1; i >= 0; i--) if (within(toks, results[i].toks)) results.splice(i, 1);
@@ -726,7 +747,7 @@ export async function search(opt) {
 	}
 
 	emit(true);
-	return { results, baseVal, base, candidates: foundCount, stats: { items: regionItems.reduce((a, l) => a + l.length, 0), cards: regionCards.reduce((a, l) => a + l.length, 0), sets: sets.length, packages: pkgCount } };
+	return { results, baseVal, base, candidates: foundCount, stats: { unreachable, items: regionItems.reduce((a, l) => a + l.length, 0), cards: regionCards.reduce((a, l) => a + l.length, 0), sets: sets.length, packages: pkgCount } };
 }
 
 /**
@@ -772,12 +793,26 @@ function expandSlots(region, d0, slotChoices, priceOf, need, price0) {
 				next.push({ cards: [...pv.cards, [region.slots[s], o.id]], d: pv.d.map((x, i) => x + o.d[i]), price: pv.price + (isEnchant(o.id) ? 0 : priceOf("card", o.id) ?? UNKNOWN_PRICE) });
 			}
 		}
-		partial = paretoPrune(next, need);
+		// 条件が多いと組み合わせが爆発するので、目標への近さの上位だけ残す
+		partial = topByProgress(paretoPrune(next, need), need, EXPAND_KEEP);
 	}
 	return partial;
 }
 
 export class BfStopped extends Error {}
+
+/** 目標への近さ（目標ごとに「伸び÷足りない分」を1までで足したもの） */
+function progressOf(v, need) {
+	let p = 0;
+	for (let i = 0; i < need.length; i++) if (need[i] > 0) p += Math.min(1, Math.max(0, v.d[i]) / need[i]);
+	return p;
+}
+const EXPAND_KEEP = 80, PRUNE_INPUT_MAX = 3000;
+/** 目標への近さの上位 n 件（同じなら安い順）。n 件以下ならそのまま */
+function topByProgress(list, need, n) {
+	if (list.length <= n) return list;
+	return list.map((v) => [progressOf(v, need), v]).sort((a, b) => (b[0] - a[0]) || (a[1].price - b[1].price)).slice(0, n).map((x) => x[1]);
+}
 
 /** a（並べ替え済み）の中身が全部 b（並べ替え済み）に含まれる（b は a に何か足しただけ） */
 function within(a, b) {
@@ -788,6 +823,11 @@ function within(a, b) {
 
 /** 条件に関係する指標だけで比べ、他より全面的に劣る組を捨てる（値段・個数も比べる） */
 function paretoPrune(list, need) {
+	// 比べるのは件数の2乗の手間なので、多すぎるときは先に目標への近さの上位に絞る（安いものも少し残す）
+	if (list.length > PRUNE_INPUT_MAX) {
+		const cheap = list.slice().sort((a, b) => a.price - b.price).slice(0, 300);
+		list = [...new Set([...cheap, ...topByProgress(list, need, PRUNE_INPUT_MAX - 300)])];
+	}
 	const idx = need.map((n, i) => i).filter((i) => need[i] > 0);
 	const cap = (v, i) => Math.min(v.d[i], need[i]);
 	// 中身: 効果を出している物（カード・エンチャントと、装備自体に効果があるならその装備）。
