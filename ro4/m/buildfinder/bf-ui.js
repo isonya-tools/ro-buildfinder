@@ -30,17 +30,17 @@ const h = (tag, attrs = {}, ...kids) => {
 	return e;
 };
 const fmtNum = (v) => (Math.round(v * 100) / 100).toLocaleString("ja-JP");
-const fmtZeny = (v) => v == null ? "—" : Math.round(v).toLocaleString("ja-JP") + " z";
+const fmtZeny = (v) => v == null ? "-" : Math.round(v).toLocaleString("ja-JP") + " z";
 const fmtSec = (ms) => (ms / 1000).toLocaleString("ja-JP", { maximumFractionDigits: 2 }) + "秒";
 const numOrNull = (s) => {
 	const t = String(s ?? "").trim().replace(/[０-９．－]/g, (c) => String.fromCharCode(c.charCodeAt(0) - 0xfee0));
 	return t === "" || !Number.isFinite(Number(t)) ? null : Number(t);
 };
-const fmtMetric = (m, v) => m.kind === "elm" ? (ELM_NAMES[v] ?? "—") : m.kind === "bool" ? (v ? "あり" : "なし") : fmtNum(v) + (m.unit || "");
+const fmtMetric = (m, v) => m.kind === "elm" ? (ELM_NAMES[v] ?? "-") : m.kind === "bool" ? (v ? "あり" : "なし") : fmtNum(v) + (m.unit || "");
 
 /** 数値の入力欄（上下の矢印なし）と、中身を消す✕ボタン */
 function numInput(value, onChange, attrs = {}) {
-	const inp = h("input", { type: "text", inputmode: "decimal", class: "bf-target", value: value ?? "", placeholder: "—", ...attrs,
+	const inp = h("input", { type: "text", inputmode: "decimal", class: "bf-target", value: value ?? "", placeholder: "-", ...attrs,
 		onchange: () => onChange(numOrNull(inp.value)) });
 	const clear = h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => { inp.value = ""; onChange(null); } }, "✕");
 	return h("span", { class: "bf-numwrap" }, inp, clear);
@@ -309,13 +309,13 @@ function targetInput(m) {
 	if (m.kind === "elm") {
 		const t = conf.targets[m.key];
 		const sel = h("select", { class: "bf-target", onchange: () => set(sel.value === "" ? null : Number(sel.value)) },
-			h("option", { value: "" }, "—"), ELM_NAMES.map((n, i) => h("option", { value: i, selected: t === i }, n)));
+			h("option", { value: "" }, "-"), ELM_NAMES.map((n, i) => h("option", { value: i, selected: t === i }, n)));
 		return h("span", { class: "bf-numwrap" }, sel, h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => set(null) }, "✕"));
 	}
 	if (m.kind === "bool") {
 		const t = conf.targets[m.key];
 		const sel = h("select", { class: "bf-target", onchange: () => set(sel.value === "" ? null : 1) },
-			h("option", { value: "" }, "—"), h("option", { value: "1", selected: t === 1 }, "あり"));
+			h("option", { value: "" }, "-"), h("option", { value: "1", selected: t === 1 }, "あり"));
 		return h("span", { class: "bf-numwrap" }, sel, h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => set(null) }, "✕"));
 	}
 	return numInput(conf.targets[m.key], set);
@@ -437,9 +437,10 @@ async function renderSkillsInner(model) {
 
 	const table = h("table", { class: "bf-skilltable" },
 		h("thead", {}, h("tr", {},
+			h("th", {}),
 			h("th", { class: "bf-sk-name" }, "スキル"),
 			h("th", {}, "固定詠唱"), h("th", {}, "装備での短縮"), h("th", {}, "目標の短縮"),
-			h("th", {}, "CT"), h("th", {}, "装備での短縮"), h("th", {}, "目標の短縮"), h("th", {}))));
+			h("th", {}, "CT"), h("th", {}, "装備での短縮"), h("th", {}, "目標の短縮"))));
 	const tbody = h("tbody");
 	table.append(tbody);
 	skillBox.replaceChildren(table, adder || "");
@@ -452,7 +453,6 @@ async function renderSkillsInner(model) {
 			nameEl.addEventListener("mousemove", (e) => showTip(e, skillTipContent(name, info)));
 			nameEl.addEventListener("mouseleave", hideTip);
 		}
-		const link = info ? h("a", { href: `https://rotool.gungho.jp/skill/${info.c}`, target: "_blank", rel: "noopener", class: "bf-sk-link", title: "公式ツールを開く" }, "🔗") : null;
 		const mk = (kind) => numInput(tgt[kind], (v) => {
 			const t = conf.skillTargets[id] || (conf.skillTargets[id] = {});
 			if (v == null) delete t[kind]; else t[kind] = Math.abs(v);
@@ -466,9 +466,10 @@ async function renderSkillsInner(model) {
 		} }, "✕");
 		const c = { cf: h("td", { class: "bf-cur" }, "…"), cfr: h("td", { class: "bf-cur" }, "…"), ct: h("td", { class: "bf-cur" }, "…"), ctr: h("td", { class: "bf-cur" }, "…") };
 		tbody.append(h("tr", { class: tgt.cf != null || tgt.ct != null ? "bf-sk-on" : "" },
-			h("td", { class: "bf-sk-name" }, link, nameEl),
+			h("td", { class: "bf-sk-del" }, del),
+			h("td", { class: "bf-sk-name" }, nameEl),
 			c.cf, c.cfr, h("td", {}, "−", mk("cf"), "ms"),
-			c.ct, c.ctr, h("td", {}, "−", mk("ct"), "ms"), h("td", {}, del)));
+			c.ct, c.ctr, h("td", {}, "−", mk("ct"), "ms")));
 		cells.push([id, maxLv, c]);
 	}
 	// 計算は1スキルずつ（画面が固まらないように間をあける）
@@ -478,9 +479,9 @@ async function renderSkillsInner(model) {
 		let t, n;
 		try { t = skillTimes(model, id, maxLv); n = skillTimes(naked, id, maxLv); } catch { continue; }
 		c.cf.textContent = fmtSec(t.cf);
-		c.cfr.textContent = n.cf - t.cf ? `−${n.cf - t.cf}ms` : "—";
+		c.cfr.textContent = n.cf - t.cf ? `−${n.cf - t.cf}ms` : "-";
 		c.ct.textContent = fmtSec(t.ct);
-		c.ctr.textContent = n.ct - t.ct ? `−${n.ct - t.ct}ms` : "—";
+		c.ctr.textContent = n.ct - t.ct ? `−${n.ct - t.ct}ms` : "-";
 	}
 }
 function skillTipContent(name, info) {
@@ -508,10 +509,10 @@ function renderRegions(model) {
 		const empty = !cur || isRegionEmpty(model, r);
 		const nSlot = empty ? 0 : itemSlotCount(cur);
 		const ids = r.slots.map((s) => model?.card?.[s] || 0);
-		const names = (list) => list.filter((c) => c > 0).map(cardName).join(" / ") || "—";
+		const names = (list) => list.filter((c) => c > 0).map(cardName).join(" / ") || "-";
 		const text = {
-			item: empty ? "—" : itemName(cur),
-			refine: r.refine ? "+" + (regionRefine(model, r) ?? 0) : "—",
+			item: empty ? "-" : itemName(cur),
+			refine: r.refine ? "+" + (regionRefine(model, r) ?? 0) : "-",
 			card: names(ids.slice(0, nSlot)),
 			ench: names(ids.slice(nSlot)),
 		};
@@ -524,7 +525,7 @@ function renderRegions(model) {
 			saveConf(); renderRegions(lastModel);
 		} }, allOn ? "固定中" : "固定");
 		regionBox.append(h("tr", {}, h("td", { class: "bf-lockcell" + (allOn ? " bf-locked" : "") }, regionBtn, h("span", { class: "bf-lockval" }, r.label)), LOCK_PARTS.map(([part]) => {
-			if (part === "refine" && !r.refine) return h("td", { class: "bf-dim" }, "—");
+			if (part === "refine" && !r.refine) return h("td", { class: "bf-dim" }, "-");
 			const on = !!lk[part] || (part === "item" && itemForced);
 			const btn = h("button", { type: "button", class: "bf-lock" + (on ? " on" : ""), disabled: part === "item" && itemForced,
 				title: part === "item" && itemForced ? "カードかエンチャントを固定しているので装備も固定です" : "",
@@ -727,7 +728,7 @@ function resultDetail(r) {
 		const cardCells = reg.slots.map((s) => {
 			const cid = m.card[s] || 0;
 			const hit = cid !== (base.card[s] || 0);
-			return h("td", { class: hit ? "bf-hit" : "" }, cid ? [cardName(cid), hit ? ngButton("card", cid) : null] : h("span", { class: "bf-zero" }, "—"));
+			return h("td", { class: hit ? "bf-hit" : "" }, cid ? [cardName(cid), hit ? ngButton("card", cid) : null] : h("span", { class: "bf-zero" }, "-"));
 		});
 		const priceCell = h("td", { class: "bf-eq-price" }, pk ? (pk.priceUnknown ? (pk.finalPrice ? fmtZeny(pk.finalPrice) + "＋不明" : "不明") : fmtZeny(pk.finalPrice)) : "");
 		table.append(h("tr", { class: changedRegions.has(reg.key) ? "bf-eq-changed" : "" }, h("th", {}, reg.label), itemCell, cardCells, priceCell));
