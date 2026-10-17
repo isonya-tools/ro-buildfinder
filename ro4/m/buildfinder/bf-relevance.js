@@ -112,21 +112,49 @@ export function makeRelevance(keys) {
 		return false;
 	};
 	const memo = new Map();
+	const directItem = (id) => hit(itemPairs(id)) || inHard("items", id) || (refresh && REFRESH_ITEMS.has(id));
+	const directCard = (id) => targetCards.has(id) || hit(cardPairs(id)) || inHard("cards", id) || (refresh && REFRESH_CARDS.has(id));
+	/** セット効果の行（w_SE[n][0]。正: アイテムの行、負: カードの行）が関係するか */
+	const setRowDirect = (src) => {
+		const k = "s" + src;
+		if (!memo.has(k)) memo.set(k, src > 0 ? directItem(src) : directCard(-src));
+		return memo.get(k);
+	};
+	// 効果がセットにしか無い物（例: エンチャント「英雄」はカード「フェンリル」とのセットで固定詠唱-80%）も、
+	// そのセットの効果が目標に関係するなら関係ありとする
+	const inRelevantSet = (k) => (setMembers().get(k) || []).some(setRowDirect);
 	const item = (id) => {
 		const k = "i" + id;
-		if (!memo.has(k)) memo.set(k, hit(itemPairs(id)) || inHard("items", id) || (refresh && REFRESH_ITEMS.has(id)));
+		if (!memo.has(k)) memo.set(k, directItem(id) || inRelevantSet(k));
 		return memo.get(k);
 	};
 	const card = (id) => {
 		const k = "c" + id;
-		if (!memo.has(k)) memo.set(k, targetCards.has(id) || hit(cardPairs(id)) || inHard("cards", id) || (refresh && REFRESH_CARDS.has(id)));
+		if (!memo.has(k)) memo.set(k, directCard(id) || inRelevantSet(k));
 		return memo.get(k);
 	};
-	/** セット効果の行（w_SE[n][0]。正: アイテムの行、負: カードの行）が関係するか */
-	const setRow = (src) => src > 0 ? item(src) : card(-src);
+	const setRow = setRowDirect;
 	/** 目標に関係するSPコードか（精錬値の条件を見るときに使う） */
 	const code = (c) => spSet.has(c % 100000);
 	return { item, card, setRow, targetCards, code };
+}
+
+/** セットのメンバー（"i<装備ID>" / "c<カードID>"）→ そのセットの効果の行（w_SE[n][0]）の一覧 */
+let setMemberMap = null;
+function setMembers() {
+	if (setMemberMap) return setMemberMap;
+	setMemberMap = new Map();
+	for (let i = 1; i < w_SE.length; i++) {
+		const s = w_SE[i];
+		if (!s || s.length < 3) continue;
+		for (const x of s.slice(1)) {
+			if (typeof x !== "number" || x === 0) continue;
+			const k = x > 0 ? "i" + x : "c" + -x;
+			if (!setMemberMap.has(k)) setMemberMap.set(k, []);
+			setMemberMap.get(k).push(s[0]);
+		}
+	}
+	return setMemberMap;
 }
 
 /** 関係しそうなセット（全メンバーがアイテムのもの）: [{setIndex, members:[itemId...], src}] */

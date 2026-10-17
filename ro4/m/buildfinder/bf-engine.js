@@ -375,7 +375,7 @@ export async function search(opt) {
 	// 全体の進み具合: 候補の確認 0〜75%、組み合わせ探し（見つけたものはその場で実計算して確かめる）75〜100%
 	let phase = [0, 0.75];
 	const onProgress = (text, r) => report(text, Math.min(1, phase[0] + (phase[1] - phase[0]) * Math.max(0, Math.min(1, r))));
-	const base = modelFromScreen();
+	const base = opt.base ? cloneModel(opt.base) : modelFromScreen();
 	const jobId = base.status.jobId;
 	const ngItemSet = new Set(ngItems.map(Number));
 	const ngCardSet = new Set(ngCards.map(Number));
@@ -586,7 +586,7 @@ export async function search(opt) {
 				}
 			}
 		}
-		regionVariants.push(paretoPrune(variants, need).slice(0, 300));
+		regionVariants.push(trimVariants(paretoPrune(variants, need), need, 300));
 		regionCtx.push(ctx);
 	}
 
@@ -646,7 +646,7 @@ export async function search(opt) {
 					twoHand: a.region.key === "weapon" && isTwoHanded(a.itemId), usesShield: a.region.key === "shield",
 				}));
 			}
-			vs = paretoPrune(vs, need).slice(0, 20);
+			vs = trimVariants(paretoPrune(vs, need), need, 20);
 			for (const v of vs) {
 				v.pkg = pkg;
 				v.pkgHead = k === 0;
@@ -847,10 +847,29 @@ function progressOf(v, need) {
 	return p;
 }
 const EXPAND_KEEP = 80, PRUNE_INPUT_MAX = 3000;
-/** 目標への近さの上位 n 件（同じなら安い順）。n 件以下ならそのまま */
+/**
+ * 目標への近さの上位 n 件（同じなら安い順）。n 件以下ならそのまま。
+ * 目標が多いと、1つの目標にしか効かない物（例: 錐効果だけのヴァルキリーカースブライト）が近さで負けて落ちるので、
+ * 目標ごとに一番伸びるもの（PER_GOAL_KEEP 件）は必ず残す
+ */
+const PER_GOAL_KEEP = 3;
 function topByProgress(list, need, n) {
 	if (list.length <= n) return list;
-	return list.map((v) => [progressOf(v, need), v]).sort((a, b) => (b[0] - a[0]) || (a[1].price - b[1].price)).slice(0, n).map((x) => x[1]);
+	const keep = new Set();
+	for (let i = 0; i < need.length; i++) {
+		if (!(need[i] > 0)) continue;
+		const best = list.filter((v) => v.d[i] > 1e-9).sort((a, b) => (Math.min(b.d[i], need[i]) - Math.min(a.d[i], need[i])) || (a.price - b.price)).slice(0, PER_GOAL_KEEP);
+		for (const v of best) keep.add(v);
+	}
+	const rest = list.filter((v) => !keep.has(v)).map((v) => [progressOf(v, need), v]).sort((a, b) => (b[0] - a[0]) || (a[1].price - b[1].price));
+	return [...keep, ...rest.slice(0, Math.max(0, n - keep.size)).map((x) => x[1])];
+}
+
+/** 部位の候補を n 件に絞る（「そのまま」は必ず残し、並びは元の安い順のまま） */
+function trimVariants(list, need, n) {
+	if (list.length <= n) return list;
+	const keep = new Set(topByProgress(list, need, n));
+	return list.filter((v) => keep.has(v) || !v.changed);
 }
 
 /** a（並べ替え済み）の中身が全部 b（並べ替え済み）に含まれる（b は a に何か足しただけ） */
