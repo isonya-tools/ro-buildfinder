@@ -154,7 +154,7 @@ function cloneModel(m) {
 
 // 計算結果の使い回し（同じ入力なら計算しない）。条件だけ変えて検索し直すときに効く
 const coreCache = new Map(), skillCache = new Map();
-const CACHE_MAX = 300000;
+const CACHE_MAX = 30000; // キーはモデル全体のJSON（大きい）なので、多く持つとメモリが足りなくなる
 function cached(map, key, fn) {
 	let v = map.get(key);
 	if (v === undefined) {
@@ -765,6 +765,110 @@ export async function search(opt) {
 		emit(false);
 	};
 
+	/**
+	 * 効き目の大きい順に積み上げる探索（ビームサーチ）. 部位を順に見て、各状態に「まだ足りない目標への効き目」の大きい
+	 * 入れ替えを足し、目標への近さ（足りない分をどれだけ埋めたか）の上位だけ残して次の部位へ進む。
+	 * 最後に足し算で全目標に届いたものを、実計算で確かめて結果に入れる。セット効果の候補は使わない
+	 */
+	const beamSearch = async () => {
+		const WIDTH = 400, PER = 40, REAL_TOP = 60;
+		// 目標への近さ。今届いている目標も、入れ替えで下回ったら減点する（例: リフレの付いた装備を外す）
+		const score = (sum) => { let p = 0; for (let k = 0; k < keys.length; k++) { if (need[k] > 0) p += Math.min(1, Math.max(0, sum[k]) / need[k]); else if (sum[k] < need[k] - 1e-9) p -= (need[k] - sum[k]) / normOf(k); } return p; };
+		let states = [{ sum: zero(), picks: [], changes: 0, cost: 0, th: weaponLocked ? isTwoHanded(baseWeapon) : false }];
+		for (let i = 0; i < n; i++) {
+			await tick();
+			onProgress(results.length ? `組み合わせを探しています（${results.length}件）` : "組み合わせを探しています", Math.min(0.95, 0.5 + 0.45 * i / n));
+			const next = [];
+			const seenSig = new Set();
+			for (const st of states) {
+				const deficit = keys.map((_, k) => need[k] > 0 ? need[k] - st.sum[k] : 0);
+				const gain = (v) => { let g = 0; for (let k = 0; k < keys.length; k++) if (deficit[k] > 1e-9 && v.d[k] > 0) g += Math.min(v.d[k], deficit[k]) / need[k]; return g; };
+				const opts = regionVariants[i].filter((v) => !v.pkg && (!v.changed || gain(v) > 1e-9))
+					.map((v) => [v.changed ? gain(v) : 0, v]).sort((a, b) => (b[0] - a[0]) || (a[1].price - b[1].price)).slice(0, PER).map((x) => x[1]);
+				if (!opts.some((v) => !v.changed)) { const keep = regionVariants[i].find((v) => !v.changed && !v.pkg); if (keep) opts.push(keep); }
+				for (const v of opts) {
+					let th = st.th;
+					if (v.region.key === "weapon") th = v.twoHand;
+					if (v.region.key === "shield" && v.usesShield && th) continue;
+					const sum = st.sum.map((x, k) => x + v.d[k]);
+					const picks = [...st.picks, v];
+					const sig = picks.map((p) => p.changed ? p.itemId + ":" + p.cards.map((c) => c[1]).join(",") : "").join("|");
+					if (seenSig.has(sig)) continue;
+					seenSig.add(sig);
+					next.push({ sum, picks, changes: st.changes + v.changed, cost: st.cost + v.price, th });
+				}
+			}
+			next.sort((a, b) => (score(b.sum) - score(a.sum)) || (a.changes - b.changes) || (a.cost - b.cost));
+			states = next.slice(0, WIDTH);
+			// 足し算の見込みは、入れ替えた部位どうしの組み合わせ（セットが切れる、固定詠唱は一番大きいものだけ効く、
+			// ASPDは足し算にならない）でずれるので、上位は実計算した値に置き換えて並べ直す
+			for (const st of states.slice(0, REAL_TOP)) {
+				const val = evalM(modelOf(st.picks));
+				st.sum = keys.map((k) => val[k] - baseVal[k]);
+				st.real = true;
+			}
+			states.sort((a, b) => (score(b.sum) - score(a.sum)) || (a.changes - b.changes) || (a.cost - b.cost));
+		}
+		const goal = keys.filter((_, k) => need[k] > 0).length;
+		const done = states.filter((st) => score(st.sum) >= goal - 1e-6 && !(st.th && shieldLocked && baseShield))
+			.sort((a, b) => (a.changes - b.changes) || (a.cost - b.cost));
+		for (const st of done) {
+			await tick();
+			foundCount++;
+			verify(st.picks);
+			if (results.length >= maxResults) break;
+		}
+		// 足し算の見込みでは届くのに実計算で届かない（固定詠唱は一番大きいものだけ効く、ASPDは足し算にならない、
+		// 入れ替えでほかの部位とのセットが切れる、など）ときは、実計算しながら1部位ずつ差し替えて詰める
+		const tried = new Set();
+		for (const st of [...done, ...states]) {
+			if (results.length >= maxResults || tried.size >= REPAIR_STARTS) break;
+			const key = st.picks.map((p) => p.changed ? p.itemId + ":" + p.cards.map((c) => c[1]).join(",") : "").join("|");
+			if (tried.has(key)) continue;
+			tried.add(key);
+			await repair(st.picks.slice());
+		}
+	};
+	function normOf(k) { return Math.max(1, Math.abs(conds[k].target) * 0.05); }
+	const REPAIR_STARTS = 6, REPAIR_STEPS = 12, REPAIR_PER_REGION = 6;
+	const modelOf = (picks) => {
+		const m = cloneModel(base);
+		for (const v of picks) {
+			if (!v.changed) continue;
+			if (!v.keep) place(m, v.region, v.itemId, v.refine ?? 0);
+			for (const [slot, cid] of v.cards) m.card[slot] = cid;
+		}
+		return m;
+	};
+	// 足りない分（目標ごとに、足りない量÷最初に足りなかった量）の合計。0なら全部届いている
+	const shortOf = (val) => { let p = 0; for (let k = 0; k < keys.length; k++) { const c = conds[k]; const lack = c.target - val[c.key]; if (lack > 1e-9) p += lack / (need[k] > 0 ? need[k] : normOf(k)); } return p; };
+	const repair = async (picks) => {
+		let val = evalM(modelOf(picks));
+		let cur = shortOf(val);
+		for (let step = 0; step < REPAIR_STEPS && cur > 1e-9; step++) {
+			const lack = keys.map((_, k) => conds[k].target - val[conds[k].key]);
+			const gain = (v) => { let g = 0; for (let k = 0; k < keys.length; k++) if (lack[k] > 1e-9 && v.d[k] > 0) g += Math.min(v.d[k], lack[k]) / (need[k] > 0 ? need[k] : normOf(k)); return g; };
+			let best = null;
+			for (let i = 0; i < n; i++) {
+				const opts = regionVariants[i].filter((v) => !v.pkg && v !== picks[i] && gain(v) > 1e-9)
+					.map((v) => [gain(v), v]).sort((a, b) => b[0] - a[0]).slice(0, REPAIR_PER_REGION).map((x) => x[1]);
+				for (const v of opts) {
+					await tick();
+					if (v.region.key === "shield" && v.usesShield && picks.some((p) => p.region.key === "weapon" && p.twoHand)) continue;
+					if (v.region.key === "weapon" && v.twoHand && picks.some((p) => p.region.key === "shield" && p.usesShield)) continue;
+					const trial = picks.slice();
+					trial[i] = v;
+					const tv = evalM(modelOf(trial));
+					const sh = shortOf(tv);
+					if (sh < cur - 1e-9 && (!best || sh < best.sh - 1e-9)) best = { sh, trial, tv };
+				}
+			}
+			if (!best) break;
+			picks = best.trial; val = best.tv; cur = best.sh;
+		}
+		if (cur <= 1e-9) { foundCount++; verify(picks); }
+	};
+
 	const pick = [];
 	const req = new Array(n).fill(null); // セットで決まっている部位
 	let nodes = 0;
@@ -772,6 +876,7 @@ export async function search(opt) {
 	// 足し算の見込みでは届くのに実計算では届かない構成が続くときに、探し続けないための上限
 	const levelLimit = maxResults * 50, totalLimit = maxResults * 80;
 	const dfs = async (i, sum, twoHand, changes, cost) => {
+		if (nodes > DFS_NODE_LIMIT) throw new DfsLimit();
 		if (++nodes % 2000 === 0) {
 			await tick();
 			onProgress(results.length ? `組み合わせを探しています（${results.length}件）` : "組み合わせを探しています", Math.min(0.95, (budget + 0.5) / (n + 1)));
@@ -791,7 +896,13 @@ export async function search(opt) {
 			return;
 		}
 		const must = req[i];
-		for (const v of regionVariants[i]) {
+		// まだ足りない目標に効かない入れ替えは試さない。効き目の大きい順に試す（早く見つけて早く終わるように）
+		const deficit = keys.map((_, k) => need[k] > 0 ? need[k] - sum[k] : 0);
+		const gain = (v) => { let g = 0; for (let k = 0; k < keys.length; k++) if (deficit[k] > 1e-9 && v.d[k] > 0) g += Math.min(v.d[k], deficit[k]) / need[k]; return g; };
+		const list = must ? regionVariants[i] : regionVariants[i]
+			.filter((v) => !v.changed || v.pkg || gain(v) > 1e-9)
+			.map((v) => [v.changed ? gain(v) : -1, v]).sort((a, b) => b[0] - a[0]).map((x) => x[1]);
+		for (const v of list) {
 			if (must) { if (v.pkg !== must) continue; }
 			else if (v.pkg) {
 				if (!v.pkgHead) continue;
@@ -809,11 +920,19 @@ export async function search(opt) {
 			if (results.length >= maxResults || levelLeaves >= levelLimit || foundCount >= totalLimit) return;
 		}
 	};
-	for (budget = 0; budget <= n; budget++) {
-		levelLeaves = 0;
-		await dfs(0, zero(), weaponLocked ? isTwoHanded(baseWeapon) : false, 0, 0);
-		if (results.length >= maxResults || foundCount >= totalLimit) break;
+	// 変更か所の少ない順の総当たりは、目標が多く変更か所も多く要るときに終わらないので、
+	// 探した節の数が上限を超えたら打ち切って、下の「効き目の大きい順に積み上げる探索」に任せる
+	const DFS_NODE_LIMIT = 1e6;
+	try {
+		for (budget = 0; budget <= n; budget++) {
+			levelLeaves = 0;
+			await dfs(0, zero(), weaponLocked ? isTwoHanded(baseWeapon) : false, 0, 0);
+			if (results.length >= maxResults || foundCount >= totalLimit) break;
+		}
+	} catch (e) {
+		if (!(e instanceof DfsLimit)) throw e;
 	}
+	if (results.length < maxResults) await beamSearch();
 
 	emit(true);
 	return { results, baseVal, base, candidates: foundCount, stats: { unreachable, items: regionItems.reduce((a, l) => a + l.length, 0), cards: regionCards.reduce((a, l) => a + l.length, 0), sets: sets.length, packages: pkgCount } };
@@ -869,6 +988,7 @@ function expandSlots(region, d0, slotChoices, priceOf, need, price0) {
 }
 
 export class BfStopped extends Error {}
+class DfsLimit extends Error {}
 
 /** 目標への近さ（目標ごとに「伸び÷足りない分」を1までで足したもの） */
 function progressOf(v, need) {
@@ -912,7 +1032,8 @@ function within(a, b) {
 /** 条件に関係する指標だけで比べ、他より全面的に劣る組を捨てる（値段・個数も比べる） */
 function paretoPrune(list, need) {
 	// 比べるのは件数の2乗の手間なので、多すぎるときは先に目標への効き目の上位に絞る（値段では切らない）
-	if (list.length > PRUNE_INPUT_MAX) list = topByProgress(list, need, PRUNE_INPUT_MAX);
+	// 「そのまま（変えない）」は効き目0でも必ず残す（無いと、その部位を変えない組み合わせが作れない）
+	if (list.length > PRUNE_INPUT_MAX) list = [...new Set([...list.filter((v) => !v.changed), ...topByProgress(list, need, PRUNE_INPUT_MAX)])];
 	const idx = need.map((n, i) => i).filter((i) => need[i] > 0);
 	const cap = (v, i) => Math.min(v.d[i], need[i]);
 	// 中身: 効果を出している物（カード・エンチャントと、装備自体に効果があるならその装備）。
