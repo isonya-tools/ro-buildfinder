@@ -165,3 +165,7 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT .bf-bar[hidden] { display: none; }
 #BF_ROOT .bf-bar-fill { height: 100%; width: 0; background: var(--bf-accent); transition: width .2s; }
 #BF_ROOT .bf-bar-pct { position: absolute; inset: 0; text-align: center; font-size: 12px; line-height: 18px; color: var(--bf-text, #e8e8e8); mix-blend-mode: difference; }
+#BF_ROOT .bf-skilltable td.bf-sk-pot, #BF_ROOT .bf-skilltable th.bf-sk-pot { text-align: left; white-space: normal; }
+#BF_ROOT .bf-pot { margin: 2px 4px 2px 0; padding: 1px 8px; font-size: 12px; border: 1px solid var(--bf-line); background: transparent; color: var(--bf-dim); cursor: pointer; border-radius: 0; }
+#BF_ROOT .bf-pot.on { background: rgba(240, 168, 67, .25); border-color: rgb(240, 168, 67); color: inherit; }
+#BF_ROOT .bf-skilltable td.bf-sk-chg { color: rgb(240, 168, 67); }

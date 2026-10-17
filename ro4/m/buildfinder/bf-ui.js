@@ -49,7 +49,7 @@ function numInput(value, onChange, attrs = {}) {
 // ---- 設定（クッキー） ----
 const defaultConf = () => ({
 	targets: {},      // 指標キー -> 目標値
-	skillTargets: {}, // skillId -> {cf: 短縮ms, ct: 短縮ms}
+	potentialOn: [],  // スキル欄でオンにした潜在解放・潜在覚醒のエンチャントID（そのまま検索の目標になる）
 	skillHidden: [],  // スキル欄から✕で消したスキル（プルダウンから戻せる）
 	buffOn: {}, // 発動バフ（時限効果ID → オン）。載っていないものはオフ
 	enchRows: null,   // [[エンチャントID, 目標の個数 or null]]（null なら今付いているものを入れる）
@@ -69,7 +69,8 @@ function loadConf() {
 		const c = JSON.parse(decodeURIComponent(m[1]));
 		conf = { ...defaultConf(), ...c };
 		if (!conf.targets || Array.isArray(conf.targets)) conf.targets = {};
-		delete conf.cardRows; delete conf.world; delete conf.timeItems;
+		delete conf.cardRows; delete conf.world; delete conf.timeItems; delete conf.skillTargets;
+		if (!Array.isArray(conf.potentialOn)) conf.potentialOn = [];
 		if (!conf.regionLock || typeof conf.regionLock !== "object") conf.regionLock = {};
 		// 旧形式（自由/装備だけ固定/完全固定）から移す
 		for (const [k, v] of Object.entries(c.regionMode || {})) {
@@ -154,6 +155,52 @@ async function loadSkillInfo() {
 		skillInfo = res.ok ? await res.json() : {};
 	} catch { skillInfo = {}; }
 }
+// 潜在解放（エンチャントDBの data.json から tools-bf-potential.py で作った bf-potential.json）
+let potential = null, potentialId = null;
+async function loadPotential() {
+	try {
+		const res = await fetch(new URL("./bf-potential.json", import.meta.url));
+		potential = res.ok ? await res.json() : { sk: {}, en: {} };
+	} catch { potential = { sk: {}, en: {} }; }
+}
+function potIdOf(name) {
+	if (!potentialId) potentialId = new Map(allEnchantNames().map(([id, n]) => [n, id]));
+	return potentialId.get(name) || 0;
+}
+/** スキルの固定詠唱・CTに関係する潜在系エンチャント [{id, name, desc, partners: [id]}] */
+function potentialsOf(skillName) {
+	const list = potential?.sk?.[String(skillName).replace(/\s+/g, "")] || [];
+	return list.map((name) => {
+		const e = potential.en[name] || {};
+		return { id: potIdOf(name), name, desc: e.d || "", partners: (e.s || []).map(potIdOf).filter((x) => x > 0), partnerNames: e.s || [] };
+	}).filter((p) => p.id > 0);
+}
+/** 潜在解放と、その効果に要るセット相手（豪傑など）のID */
+function potentialWithPartners(ids) {
+	const out = new Set();
+	for (const id of ids) {
+		out.add(id);
+		const name = cardName(id);
+		for (const pn of potential?.en?.[name]?.s || []) { const pid = potIdOf(pn); if (pid) out.add(pid); }
+	}
+	return [...out];
+}
+/** 装備なしの状態に、選んだ潜在解放（とセット相手）を空いたエンチャント枠へ付けたもの */
+function withPotentials(naked, ids) {
+	const m = structuredClone(naked);
+	const slots = BF_REGIONS.filter((r) => r.key !== "weapon").flatMap((r) => r.slots.slice(1)).filter((s) => !(m.card[s] > 0));
+	potentialWithPartners(ids).forEach((id, i) => { if (slots[i] != null) m.card[slots[i]] = id; });
+	return m;
+}
+function potentialTip(p) {
+	const box = h("div", {}, h("div", { class: "bf-tip-title" }, p.name));
+	for (const line of p.desc.split("\n")) {
+		const mm = line.match(/^\x02(.*?)\x03\s*(.*)$/);
+		box.append(mm ? h("div", { class: "bf-tip-row" }, h("b", {}, mm[1]), h("span", {}, mm[2])) : h("div", {}, line));
+	}
+	if (p.partnerNames.length) box.append(h("div", { class: "bf-tip-note" }, `オンにすると ${p.partnerNames.join("・")} も目標に入ります`));
+	return box;
+}
 const skillInfoOf = (name) => skillInfo?.[String(name).replace(/\s+/g, "")] || null;
 
 // ---- ツールチップ ----
@@ -188,7 +235,7 @@ export async function initBuildFinder(container) {
 	setBuffOn(conf.buffOn);
 	// 謝辞・ライセンスはページの一番下に置く
 	document.body.append(h("div", { id: "BF_FOOT" }, licenseNote()));
-	[prices] = await Promise.all([loadPrices(), loadSkillInfo(), loadOfficial(), loadYomi()]);
+	[prices] = await Promise.all([loadPrices(), loadSkillInfo(), loadPotential(), loadOfficial(), loadYomi()]);
 	refreshAll();
 	let timer = 0;
 	document.addEventListener("change", (e) => {
@@ -413,8 +460,7 @@ async function renderSkillsInner(model) {
 	}
 	const timed = timedSkillCache.get(jobId);
 	if (!Array.isArray(conf.skillHidden)) conf.skillHidden = [];
-	for (const id of Object.keys(conf.skillTargets).map(Number)) conf.skillHidden = conf.skillHidden.filter((x) => x !== id);
-	const shown = skillList.filter(([id]) => (timed.has(id) && !conf.skillHidden.includes(id)) || conf.skillTargets[id]);
+	const shown = skillList.filter(([id]) => timed.has(id) && !conf.skillHidden.includes(id));
 	const hidden = skillList.filter(([id]) => timed.has(id) && !shown.some(([s]) => s === id));
 
 	const sel = h("select", {}, h("option", { value: "" }, ""));
@@ -439,49 +485,65 @@ async function renderSkillsInner(model) {
 		h("thead", {}, h("tr", {},
 			h("th", {}),
 			h("th", { class: "bf-sk-name" }, "スキル"),
-			h("th", {}, "固定詠唱"), h("th", {}, "装備での短縮"), h("th", {}, "目標の短縮"),
-			h("th", {}, "CT"), h("th", {}, "装備での短縮"), h("th", {}, "目標の短縮"))));
+			h("th", {}, "固定詠唱"), h("th", {}, "装備での短縮"),
+			h("th", {}, "CT"), h("th", {}, "装備での短縮"),
+			h("th", { class: "bf-sk-pot" }, "潜在解放"))));
 	const tbody = h("tbody");
 	table.append(tbody);
 	skillBox.replaceChildren(table, adder || "");
+	const on = new Set(conf.potentialOn);
 	const cells = [];
 	for (const [id, name, maxLv] of shown) {
 		const info = skillInfoOf(name);
-		const tgt = conf.skillTargets[id] || {};
 		const nameEl = h("span", { class: "bf-sk-label" }, name);
 		if (info) {
 			nameEl.addEventListener("mousemove", (e) => showTip(e, skillTipContent(name, info)));
 			nameEl.addEventListener("mouseleave", hideTip);
 		}
-		const mk = (kind) => numInput(tgt[kind], (v) => {
-			const t = conf.skillTargets[id] || (conf.skillTargets[id] = {});
-			if (v == null) delete t[kind]; else t[kind] = Math.abs(v);
-			if (t.cf == null && t.ct == null) delete conf.skillTargets[id];
-			saveConf();
-		});
+		const pots = potentialsOf(name);
+		const potCell = h("td", { class: "bf-sk-pot" });
+		for (const p of pots) {
+			const label = p.name.replace(/^潜在(解放|覚醒)\((.*)\)$/, "$2");
+			const btn = h("button", { type: "button", class: "bf-pot" + (on.has(p.id) ? " on" : ""), onclick: () => {
+				hideTip();
+				if (on.has(p.id)) conf.potentialOn = conf.potentialOn.filter((x) => x !== p.id);
+				else conf.potentialOn.push(p.id);
+				saveConf(); renderSkills(lastModel);
+			} }, label);
+			btn.addEventListener("mousemove", (e) => showTip(e, potentialTip(p)));
+			btn.addEventListener("mouseleave", hideTip);
+			potCell.append(btn);
+		}
+		if (!pots.length) potCell.append("-");
 		const del = h("button", { type: "button", class: "bf-clear", title: "一覧から消す", onclick: () => {
 			if (!conf.skillHidden.includes(id)) conf.skillHidden.push(id);
-			delete conf.skillTargets[id];
 			saveConf(); renderSkills(lastModel);
 		} }, "✕");
+		const mine = pots.filter((p) => on.has(p.id)).map((p) => p.id);
 		const c = { cf: h("td", { class: "bf-cur" }, "…"), cfr: h("td", { class: "bf-cur" }, "…"), ct: h("td", { class: "bf-cur" }, "…"), ctr: h("td", { class: "bf-cur" }, "…") };
-		tbody.append(h("tr", { class: tgt.cf != null || tgt.ct != null ? "bf-sk-on" : "" },
+		tbody.append(h("tr", { class: mine.length ? "bf-sk-on" : "" },
 			h("td", { class: "bf-sk-del" }, del),
 			h("td", { class: "bf-sk-name" }, nameEl),
-			c.cf, c.cfr, h("td", {}, "−", mk("cf"), "ms"),
-			c.ct, c.ctr, h("td", {}, "−", mk("ct"), "ms")));
-		cells.push([id, maxLv, c]);
+			c.cf, c.cfr, c.ct, c.ctr, potCell));
+		cells.push([id, maxLv, c, mine]);
 	}
 	// 計算は1スキルずつ（画面が固まらないように間をあける）
-	for (const [id, maxLv, c] of cells) {
+	// 固定詠唱・CT は「装備なしの秒数→オンにした潜在解放を付けたときの秒数」。装備での短縮は今の装備で縮む分
+	for (const [id, maxLv, c, mine] of cells) {
 		await new Promise((r) => setTimeout(r, 0));
 		if (token !== skillRenderToken) return;
-		let t, n;
-		try { t = skillTimes(model, id, maxLv); n = skillTimes(naked, id, maxLv); } catch { continue; }
-		c.cf.textContent = fmtSec(t.cf);
+		let t, n, a;
+		try {
+			t = skillTimes(model, id, maxLv); n = skillTimes(naked, id, maxLv);
+			a = mine.length ? skillTimes(withPotentials(naked, mine), id, maxLv) : n;
+		} catch { continue; }
+		const arrow = (x, y) => (x !== y ? `${fmtSec(x)}→${fmtSec(y)}` : fmtSec(x));
+		c.cf.textContent = arrow(n.cf, a.cf);
 		c.cfr.textContent = n.cf - t.cf ? `−${n.cf - t.cf}ms` : "-";
-		c.ct.textContent = fmtSec(t.ct);
+		c.ct.textContent = arrow(n.ct, a.ct);
 		c.ctr.textContent = n.ct - t.ct ? `−${n.ct - t.ct}ms` : "-";
+		if (a.cf !== n.cf) c.cf.classList.add("bf-sk-chg");
+		if (a.ct !== n.ct) c.ct.classList.add("bf-sk-chg");
 	}
 }
 function skillTipContent(name, info) {
@@ -598,21 +660,18 @@ function buildConds() {
 		if (m.kind === "elm") conds.push({ key: "elm:" + t, target: 1, label: `${m.label}が${ELM_NAMES[t]}`, unit: "", elm: true });
 		else conds.push({ key, target: t, label: m.label, unit: m.unit });
 	}
-	const skillLv = {};
-	for (const [id, t] of Object.entries(conf.skillTargets)) {
-		const sk = skillList.find(([sid]) => sid === Number(id));
-		if (!sk) continue;
-		skillLv[id] = sk[2];
-		if (t.cf != null) conds.push({ key: `sk:${id}:cf`, target: t.cf, label: `${sk[1]} 固定詠唱の短縮`, unit: "ms" });
-		if (t.ct != null) conds.push({ key: `sk:${id}:ct`, target: t.ct, label: `${sk[1]} CTの短縮`, unit: "ms" });
-	}
 	for (const [cid, n] of conf.enchRows || []) {
 		if (cid > 0 && n != null && n > 0) conds.push({ key: "card:" + cid, target: n, label: cardName(cid), unit: "個" });
 	}
 	for (const [cid, n] of conf.cardGoalRows || []) {
 		if (cid > 0 && n != null && n > 0) conds.push({ key: "card:" + cid, target: n, label: cardName(cid), unit: "枚" });
 	}
-	return { conds, skillLv };
+	// スキル欄でオンにした潜在解放は、それ自体とセット相手（豪傑など）を1個以上の目標にする
+	for (const cid of potentialWithPartners(conf.potentialOn || [])) {
+		if (conds.some((c) => c.key === "card:" + cid)) continue;
+		conds.push({ key: "card:" + cid, target: 1, label: cardName(cid), unit: "個" });
+	}
+	return { conds, skillLv: {} };
 }
 
 async function runSearch() {
