@@ -12,6 +12,7 @@ import { ItemObjNew } from "../../../engine/equip/item.dat.js";
 import { CardObjNew } from "../../../engine/equip/card.dat.js";
 import { loadPrices, priceOfFactory } from "./bf-price.js";
 import { applyModelToScreen } from "./bf-apply.js";
+import { get as registryGet } from "../../../engine/runtime/engine-registry.js";
 import { ITEM_SP_TIME_OBJ } from "../../../engine/equip/timeitem.dat.js";
 import { TIME_ITEM_DATA_INDEX_NAME, TIME_ITEM_DATA_INDEX_EXPLAIN } from "../../../engine/const/EnumTimeItemDataIndex.js";
 import { g_timeItemDataBridge } from "../../../engine/equip/CTimeItemDataBridge.js";
@@ -49,7 +50,7 @@ function numInput(value, onChange, attrs = {}) {
 const defaultConf = () => ({
 	targets: {},      // 指標キー -> 目標値
 	skillTargets: {}, // skillId -> {cf: 短縮ms, ct: 短縮ms}
-	skillShown: [],   // スキル欄に出すスキル
+	skillHidden: [],  // スキル欄から✕で消したスキル（プルダウンから戻せる）
 	buffOn: {}, // 発動バフ（時限効果ID → オン）。載っていないものはオフ
 	enchRows: null,   // [[エンチャントID, 目標の個数 or null]]（null なら今付いているものを入れる）
 	enchRemoved: [],  // 一覧から外したエンチャント（今付いていても自動では入れ直さない）
@@ -132,9 +133,9 @@ function readingOf(cid) {
 	return yfold(yomi?.get(yomiKey(nm)) || yomi?.get("~" + yomiBase(nm)) || "");
 }
 /** TomSelect の候補と検索方法（名前の部分一致、ひらがな・カタカナ同一視、読みの部分一致） */
-function kanaSelectOptions(list) {
+function kanaSelectOptions(list, reading = readingOf) {
 	return {
-		options: list.map(([id, name]) => ({ value: String(id), text: name, n: searchNorm(name), y: readingOf(id) })),
+		options: list.map(([id, name]) => ({ value: String(id), text: name, n: searchNorm(name), y: reading(id) })),
 		searchField: ["text"],
 		score: (q) => {
 			const n = searchNorm(q), y = yfold(q);
@@ -225,11 +226,35 @@ function refreshAll() {
 	try { model = modelFromScreen(); } catch { stateBox.textContent = "計算の準備中です"; return; }
 	lastModel = model;
 	lastSig = JSON.stringify([model.status.jobId, model.equip, model.card]);
-	renderState(model);
-	renderEnch(model);
-	renderBuffs(model);
-	renderRegions(model);
+	freezeScreen();
+	try {
+		renderState(model);
+		renderEnch(model);
+		renderBuffs(model);
+		renderRegions(model);
+	} finally { thawScreen(); }
 	renderSkills(model);
+}
+
+// ---- 上の計算欄（最大HP・最大SPなど）を止めておく ----
+// シミュの計算もらとりおの計算本体を使うので、そのたびに上の欄が書き換わってちらつく。
+// 計算中は欄の写しを見せて本物は隠し、終わったら画面の入力で計算し直して本物を戻す。
+let freezeDepth = 0, frozen = null;
+function freezeScreen() {
+	if (freezeDepth++ > 0) return;
+	const t = document.getElementById("OBJID_SPAN_CHARA_MAXHP")?.closest("table")?.parentElement?.closest("table");
+	if (!t) return;
+	const copy = t.cloneNode(true);
+	for (const e of copy.querySelectorAll("[id]")) e.removeAttribute("id");
+	t.before(copy);
+	t.style.display = "none";
+	frozen = { t, copy };
+}
+function thawScreen() {
+	if (--freezeDepth > 0) return;
+	freezeDepth = 0;
+	try { registryGet("calcCoreFromModel")(registryGet("extractModelFromDom")()); } catch { /* 画面の準備前 */ }
+	if (frozen) { frozen.copy.remove(); frozen.t.style.display = ""; frozen = null; }
 }
 
 // ---- 発動バフ（らとりおの「クイック調整」と同じ中身。個別にオンオフ、既定はオフ） ----
@@ -363,36 +388,53 @@ function goalRow(kind, row, i, counts) {
 
 // ---- スキル ----
 let skillRenderToken = 0, skillTs = null;
+const timedSkillCache = new Map(); // 職業ID → 固定詠唱かCTのあるスキルID
 async function renderSkills(model) {
+	freezeScreen();
+	try { await renderSkillsInner(model); } finally { thawScreen(); }
+}
+async function renderSkillsInner(model) {
 	const token = ++skillRenderToken;
 	skillList = attackSkillsOf(model.status.jobId).filter(([id]) => id !== 0).reverse();
 	if (skillTs) { try { skillTs.destroy(); } catch { /* 済み */ } skillTs = null; }
 	if (!skillList.length) { skillBox.replaceChildren(h("p", { class: "bf-zero" }, "職業を選択してください")); return; }
-	// 一覧に出すのは選んだスキルだけ（目標が入っているものも出す）
-	const ids = new Set(skillList.map(([id]) => id));
-	conf.skillShown = (conf.skillShown || []).filter((id) => ids.has(id));
-	for (const id of Object.keys(conf.skillTargets).map(Number)) if (ids.has(id) && !conf.skillShown.includes(id)) conf.skillShown.push(id);
-	const shown = skillList.filter(([id]) => conf.skillShown.includes(id));
+	// 最初から、その職業の固定詠唱かCTがあるスキルを全部出す（✕で消したものはプルダウンから戻せる）
+	const naked = nakedModel(model);
+	const jobId = model.status.jobId;
+	if (!timedSkillCache.has(jobId)) {
+		skillBox.replaceChildren(h("p", { class: "bf-zero" }, "スキルを調べています"));
+		const ids = new Set();
+		for (const [id, , maxLv] of skillList) {
+			await new Promise((r) => setTimeout(r, 0));
+			if (token !== skillRenderToken) return;
+			try { const n = skillTimes(naked, id, maxLv); if (n.cf > 0 || n.ct > 0) ids.add(id); } catch { /* 計算できないスキルは出さない */ }
+		}
+		timedSkillCache.set(jobId, ids);
+	}
+	const timed = timedSkillCache.get(jobId);
+	if (!Array.isArray(conf.skillHidden)) conf.skillHidden = [];
+	for (const id of Object.keys(conf.skillTargets).map(Number)) conf.skillHidden = conf.skillHidden.filter((x) => x !== id);
+	const shown = skillList.filter(([id]) => (timed.has(id) && !conf.skillHidden.includes(id)) || conf.skillTargets[id]);
+	const hidden = skillList.filter(([id]) => timed.has(id) && !shown.some(([s]) => s === id));
 
 	const sel = h("select", {}, h("option", { value: "" }, ""));
-	const adder = h("div", { class: "bf-skilladd" }, sel);
-	queueMicrotask(() => {
+	const adder = hidden.length ? h("div", { class: "bf-skilladd" }, sel) : null;
+	if (adder) queueMicrotask(() => {
 		if (!window.TomSelect) return;
 		skillTs = new window.TomSelect(sel, {
-			options: skillList.filter(([id]) => !conf.skillShown.includes(id)).map(([id, name]) => ({ value: String(id), text: name })),
-			maxOptions: 300, placeholder: "スキルを追加（名前を入力）", allowEmptyOption: true,
+			...kanaSelectOptions(hidden.map(([id, name]) => [id, name]), () => ""),
+			maxOptions: 300, placeholder: "消したスキルを戻す（名前を入力）", allowEmptyOption: true,
 			onChange: (v) => {
 				const id = Number(v) || 0;
 				if (!id) return;
-				conf.skillShown.push(id);
+				conf.skillHidden = conf.skillHidden.filter((x) => x !== id);
 				saveConf();
 				setTimeout(() => renderSkills(lastModel), 0);
 			},
 		});
 	});
-	if (!shown.length) { skillBox.replaceChildren(adder); return; }
+	if (!shown.length) { skillBox.replaceChildren(h("p", { class: "bf-zero" }, "固定詠唱・CTのあるスキルがありません"), adder || ""); return; }
 
-	const naked = nakedModel(model);
 	const table = h("table", { class: "bf-skilltable" },
 		h("thead", {}, h("tr", {},
 			h("th", { class: "bf-sk-name" }, "スキル"),
@@ -400,7 +442,7 @@ async function renderSkills(model) {
 			h("th", {}, "CT"), h("th", {}, "装備での短縮"), h("th", {}, "目標の短縮"), h("th", {}))));
 	const tbody = h("tbody");
 	table.append(tbody);
-	skillBox.replaceChildren(table, adder);
+	skillBox.replaceChildren(table, adder || "");
 	const cells = [];
 	for (const [id, name, maxLv] of shown) {
 		const info = skillInfoOf(name);
@@ -418,7 +460,7 @@ async function renderSkills(model) {
 			saveConf();
 		});
 		const del = h("button", { type: "button", class: "bf-clear", title: "一覧から消す", onclick: () => {
-			conf.skillShown = conf.skillShown.filter((x) => x !== id);
+			if (!conf.skillHidden.includes(id)) conf.skillHidden.push(id);
 			delete conf.skillTargets[id];
 			saveConf(); renderSkills(lastModel);
 		} }, "✕");
@@ -577,6 +619,7 @@ async function runSearch() {
 	const { conds, skillLv } = buildConds();
 	if (!conds.length) { progressBox.textContent = "目標を1つ以上入れてください。"; return; }
 	running = true; stopFlag = false;
+	freezeScreen();
 	searchBtn.disabled = true; stopBtn.disabled = false;
 	resultBox.replaceChildren();
 	lastResults = null; openSigs.clear();
@@ -604,6 +647,7 @@ async function runSearch() {
 	} finally {
 		running = false; searchBtn.disabled = false; stopBtn.disabled = true;
 		progressBar.hidden = true;
+		thawScreen();
 	}
 }
 /** 進捗バー（戻らないように最大値で表示） */
