@@ -11,6 +11,7 @@
 import { get as registryGet } from "../../../engine/runtime/engine-registry.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
 import { CardObjNew } from "../../../engine/equip/card.dat.js";
+import { GetMaxSlot } from "../../../engine/equip/item.h.js";
 import { IsMatchJobRestrict } from "../../../engine/data/mig.job.h.js";
 import { g_constDataManager } from "../../../engine/runtime/global.js";
 import { CONST_DATA_KIND_ENCHANT_LIST, CONST_DATA_KIND_JOB } from "../../../engine/const/EnumConstDataKind.js";
@@ -50,7 +51,7 @@ export const BF_REGIONS = [
 
 export function itemName(id) { return ItemObjNew[id]?.[IDX_NAME] ?? ""; }
 export function cardName(id) { return CardObjNew[id]?.[CIDX_NAME] ?? ""; }
-export function itemSlotCount(id) { return Number(ItemObjNew[id]?.[IDX_SLOT] ?? 0); }
+export function itemSlotCount(id) { return GetMaxSlot(ItemObjNew[id]?.[IDX_SLOT] ?? 0); }
 
 /** 現在の画面の入力からモデルを作る（固定装備・ステータス・支援などすべて） */
 export function modelFromScreen() {
