@@ -33,6 +33,7 @@ const CIDX_ID = 0, CIDX_KIND = 1, CIDX_NAME = 2;
 
 /** 探索対象の部位定義。empty: 装備なしのアイテムID、refine: 精錬値の場所 */
 const armor = (key, label, eq, kinds, cardKinds, slots, refine, empty) => ({ key, label, eq, kinds, cardKinds, slots, refine, empty });
+const shadow = (key, label, rid, kinds, slots) => ({ key, label, eq: null, shadow: rid, kinds, cardKinds: [], slots: [-1, ...slots], refine: "shadow", empty: 0 });
 export const BF_REGIONS = [
 	armor("weapon", "武器", R.EQUIP_REGION_ID_ARMS, null, [CK.CARD_KIND_ARMS],
 		[CR.CARD_REGION_ID_ARMS_RIGHT_1, CR.CARD_REGION_ID_ARMS_RIGHT_2, CR.CARD_REGION_ID_ARMS_RIGHT_3, CR.CARD_REGION_ID_ARMS_RIGHT_4], "weapon", 0),
@@ -54,10 +55,42 @@ export const BF_REGIONS = [
 		[CR.CARD_REGION_ID_ACCESSORY_1, CR.CARD_REGION_ID_ENCHANT_ACCESSORY_1_1, CR.CARD_REGION_ID_ENCHANT_ACCESSORY_1_2, CR.CARD_REGION_ID_ENCHANT_ACCESSORY_1_3], null, NE.ITEM_ID_NOEQUIP_ACCESSORY),
 	armor("acc2", "アクセ(左)", R.EQUIP_REGION_ID_ACCESSORY_2, [K.ITEM_KIND_ACCESSORY, K.ITEM_KIND_ACCESSORY_ON2], [CK.CARD_KIND_ACCESSORY, CK.CARD_KIND_ACCESSORY_ON2],
 		[CR.CARD_REGION_ID_ACCESSORY_2, CR.CARD_REGION_ID_ENCHANT_ACCESSORY_2_1, CR.CARD_REGION_ID_ENCHANT_ACCESSORY_2_2, CR.CARD_REGION_ID_ENCHANT_ACCESSORY_2_3], null, NE.ITEM_ID_NOEQUIP_ACCESSORY),
+	// シャドウ装備. 装備は model.shadowEquip.itemId[部位ID]、精錬値は shadowEquip.refined。
+	// カードは挿せず、エンチャントは3つ（エンチャ一覧の2〜4番目の枠）。slots の先頭 -1 はカード枠が無い印
+	shadow("sWeapon", "シャドウ武器", R.EQUIP_REGION_ID_SHADOW_ARMS_RIGHT, [K.ITEM_KIND_SHADOW_ARMS_RIGHT, K.ITEM_KIND_SHADOW_ARMS_1HAND, K.ITEM_KIND_SHADOW_ARMS_2HAND],
+		[CR.CARD_REGION_ID_SHADOW_ARMS_RIGHT_1, CR.CARD_REGION_ID_SHADOW_ARMS_RIGHT_2, CR.CARD_REGION_ID_SHADOW_ARMS_RIGHT_3]),
+	shadow("sShield", "シャドウ盾", R.EQUIP_REGION_ID_SHADOW_ARMS_LEFT, [K.ITEM_KIND_SHADOW_ARMS_LEFT, K.ITEM_KIND_SHADOW_SHIELD],
+		[CR.CARD_REGION_ID_SHADOW_SHIELD_1, CR.CARD_REGION_ID_SHADOW_SHIELD_2, CR.CARD_REGION_ID_SHADOW_SHIELD_3]),
+	shadow("sBody", "シャドウ鎧", R.EQUIP_REGION_ID_SHADOW_BODY, [K.ITEM_KIND_SHADOW_BODY],
+		[CR.CARD_REGION_ID_SHADOW_ENCHANT_BODY_1, CR.CARD_REGION_ID_SHADOW_ENCHANT_BODY_2, CR.CARD_REGION_ID_SHADOW_ENCHANT_BODY_3]),
+	shadow("sShoes", "シャドウ靴", R.EQUIP_REGION_ID_SHADOW_FOOT, [K.ITEM_KIND_SHADOW_FOOT],
+		[CR.CARD_REGION_ID_SHADOW_ENCHANT_SHOES_1, CR.CARD_REGION_ID_SHADOW_ENCHANT_SHOES_2, CR.CARD_REGION_ID_SHADOW_ENCHANT_SHOES_3]),
+	shadow("sAcc1", "シャドウアクセ(右)", R.EQUIP_REGION_ID_SHADOW_ACCESSORY_1, [K.ITEM_KIND_SHADOW_ACCESSORY, K.ITEM_KIND_SHADOW_ACCESSORY_ON1],
+		[CR.CARD_REGION_ID_SHADOW_ENCHANT_ACCESSORY1_1, CR.CARD_REGION_ID_SHADOW_ENCHANT_ACCESSORY1_2, CR.CARD_REGION_ID_SHADOW_ENCHANT_ACCESSORY1_3]),
+	shadow("sAcc2", "シャドウアクセ(左)", R.EQUIP_REGION_ID_SHADOW_ACCESSORY_2, [K.ITEM_KIND_SHADOW_ACCESSORY, K.ITEM_KIND_SHADOW_ACCESSORY_ON2],
+		[CR.CARD_REGION_ID_SHADOW_ENCHANT_ACCESSORY2_1, CR.CARD_REGION_ID_SHADOW_ENCHANT_ACCESSORY2_2, CR.CARD_REGION_ID_SHADOW_ENCHANT_ACCESSORY2_3]),
 ];
 
-function getRefine(m, r) { return r.refine === "weapon" ? m.weapon.atkPlus : r.refine ? m.defPlus[r.refine] : 0; }
-function setRefine(m, r, v) { if (r.refine === "weapon") m.weapon.atkPlus = v; else if (r.refine) m.defPlus[r.refine] = v; }
+// アクセサリーの左右（入れ替えただけの構成は同じとみなす）
+const ACC_PAIR = { acc1: "acc2", sAcc1: "sAcc2" };
+const ACC_SIDE = { acc2: "acc1", sAcc2: "sAcc1" };
+const REGION_BY_KEY = Object.fromEntries(BF_REGIONS.map((r) => [r.key, r]));
+/** 部位の装備ID（シャドウは shadowEquip から） */
+export function regionItem(m, r) { return r.shadow ? (m?.shadowEquip?.itemId?.[r.shadow] || 0) : m?.equip?.[r.eq]; }
+function setRegionItem(m, r, iid) {
+	if (!r.shadow) { m.equip[r.eq] = iid; return; }
+	m.shadowEquip ??= { itemId: [], refined: [], rndOpt: [] };
+	if (m.shadowEquip.itemId[r.shadow] !== iid) (m.shadowEquip.rndOpt ??= [])[r.shadow] = [];
+	m.shadowEquip.itemId[r.shadow] = iid;
+}
+export function getRefine(m, r) {
+	if (r.refine === "shadow") return m?.shadowEquip?.refined?.[r.shadow] || 0;
+	return r.refine === "weapon" ? m.weapon.atkPlus : r.refine ? m.defPlus[r.refine] : 0;
+}
+function setRefine(m, r, v) {
+	if (r.refine === "shadow") { m.shadowEquip ??= { itemId: [], refined: [], rndOpt: [] }; m.shadowEquip.refined[r.shadow] = v; }
+	else if (r.refine === "weapon") m.weapon.atkPlus = v; else if (r.refine) m.defPlus[r.refine] = v;
+}
 /**
  * 入れ替える装備で試す精錬値. +0 に加えて、過剰精錬で効果が変わる値（データの「精錬値◯以上」「精錬1ごと」、
  * 計算処理が精錬値を見る装備）と、エンチャントの精錬値の条件。精錬できない部位は+0だけ。
@@ -89,14 +122,15 @@ function refineLevelsOf(r, iid, codeOk = null) {
 /** 部位に装備を置く（カード・エンチャは外し、精錬値は指定値） */
 function placeItem(m, r, iid, refine) {
 	clearRegion(m, r);
-	m.equip[r.eq] = iid;
+	setRegionItem(m, r, iid);
 	if (r.key === "weapon") m.weapon.type = ItemObjNew[iid][IDX_KIND];
 	setRefine(m, r, refine);
 }
 /** 部位を空にする（装備なし・カード/エンチャなし） */
 function clearRegion(m, r) {
-	m.equip[r.eq] = r.empty;
-	for (const s of r.slots) m.card[s] = 0;
+	setRegionItem(m, r, r.empty);
+	if (r.shadow) setRefine(m, r, 0);
+	for (const s of r.slots) if (s >= 0) m.card[s] = 0;
 }
 
 export function itemName(id) { return ItemObjNew[id]?.[IDX_NAME] ?? ""; }
@@ -183,7 +217,7 @@ export function attackSkillsOf(jobId) {
 
 /** その部位が空き（装備なし）か */
 export function isRegionEmpty(model, region) {
-	const id = model.equip[region.eq];
+	const id = regionItem(model, region);
 	if (!id || id === region.empty) return true;
 	const name = itemName(id);
 	return /装備なし$|^\(?なし\)?$/.test(name) || name === "";
@@ -276,6 +310,7 @@ export function itemCandidatesOf(region, jobId, kinds = region.kinds) {
 /** 部位ごとのカード候補 */
 export function cardCandidatesOf(region) {
 	const out = [];
+	if (region.shadow) return out; // シャドウ装備にカードは挿せない
 	for (const c of CardObjNew) {
 		if (!c) continue;
 		// CARD_KIND_ANY（ナドヨなど）はどの部位にも挿せる
@@ -431,6 +466,7 @@ export async function search(opt) {
 		const ench = enchOf(iid).map((a, s) => a.filter((cid) => (detail[s].get(cid) ?? 0) <= lv));
 		const out = [];
 		for (let s = 0; s < 4; s++) {
+			if (ctx.r.slots[s] == null || ctx.r.slots[s] < 0) { out.push([]); continue; }
 			if (s < nSlot) { out.push(ctx.cardOpts); continue; }
 			const opts = [];
 			for (const cid of ench[s] || []) {
@@ -445,7 +481,7 @@ export async function search(opt) {
 
 	for (let ri = 0; ri < regions.length; ri++) {
 		const r = regions[ri];
-		const curItem = isRegionEmpty(base, r) ? 0 : base.equip[r.eq];
+		const curItem = isRegionEmpty(base, r) ? 0 : regionItem(base, r);
 		const curCards = r.slots.map((s) => base.card[s] || 0);
 		onProgress("候補を調べています", done / totalWork);
 
@@ -489,7 +525,7 @@ export async function search(opt) {
 			const slotChoices = [];
 			for (let s = 0; s < 4; s++) {
 				const opts = [];
-				if (s < nSlot ? L[r.key].card : L[r.key].ench) { slotChoices.push(opts); continue; }
+				if (r.slots[s] == null || r.slots[s] < 0 || (s < nSlot ? L[r.key].card : L[r.key].ench)) { slotChoices.push(opts); continue; }
 				if (s < nSlot) {
 					// 今のカードを外したときの差分を足す
 					let removeD = zero();
@@ -569,7 +605,7 @@ export async function search(opt) {
 		for (const mid of S.members) {
 			const x = ItemObjNew[mid];
 			if (!x) { ok = false; break; }
-			const eqR = BF_REGIONS.find((r) => !used.has(r.key) && base.equip[r.eq] === mid);
+			const eqR = BF_REGIONS.find((r) => !used.has(r.key) && regionItem(base, r) === mid);
 			if (eqR) { used.add(eqR.key); assign.push({ region: eqR, itemId: mid, already: true }); continue; }
 			if (ngItemSet.has(mid) || !IsMatchJobRestrict(mid, jobId)) { ok = false; break; }
 			const r = regions.find((r) => !used.has(r.key) && !keepItem.includes(r.key) && kindsOf(r)?.includes(x[IDX_KIND]));
@@ -667,12 +703,14 @@ export async function search(opt) {
 			for (const [slot, cid] of v.cards) m.card[slot] = cid;
 		}
 		// 同じ部位の中でエンチャントの並び順だけ違うもの・アクセサリーの左右が入れ替わっただけのものは同じ構成とみなす
-		const part = BF_REGIONS.map((r) => JSON.stringify([m.equip[r.eq] || 0, getRefine(m, r), ...r.slots.map((s) => m.card[s] || 0).sort()]));
-		const sig = part.slice(0, -2).concat(part.slice(-2).sort()).join("|");
+		const partOf = (r) => JSON.stringify([regionItem(m, r) || 0, getRefine(m, r), ...r.slots.map((s) => m.card[s] || 0).sort()]);
+		const part = BF_REGIONS.filter((r) => !ACC_PAIR[r.key] && !ACC_SIDE[r.key]).map(partOf);
+		for (const [a, b] of Object.entries(ACC_PAIR)) part.push([partOf(REGION_BY_KEY[a]), partOf(REGION_BY_KEY[b])].sort().join("/"));
+		const sig = part.join("|");
 		if (seen.has(sig)) return;
 		seen.add(sig);
 		// 既に見つかった構成に物を足しただけのものは出さない
-		const toks = picks.filter((v) => v.changed).flatMap((v) => [...(v.keep ? [] : [`${v.region.key}:i${v.itemId}:${v.refine ?? 0}`]), ...v.cards.map(([, cid]) => `${v.region.key === "acc2" ? "acc1" : v.region.key}:c${cid}`)]).sort();
+		const toks = picks.filter((v) => v.changed).flatMap((v) => [...(v.keep ? [] : [`${v.region.key}:i${v.itemId}:${v.refine ?? 0}`]), ...v.cards.map(([, cid]) => `${ACC_SIDE[v.region.key] || v.region.key}:c${cid}`)]).sort();
 		if (results.some((x) => within(x.toks, toks))) return;
 		// まず本体の計算だけで、スキル以外の条件を満たすか確かめる（スキルの計算は重いので後回し）
 		if (skills.length) {

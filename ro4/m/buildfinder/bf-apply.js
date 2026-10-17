@@ -18,6 +18,16 @@ export function applyModelToScreen(model, regions) {
 	registryGet("calcCoreFromModel")(registryGet("extractModelFromDom")());
 	const sm = extractSaveModelFromState();
 	for (const r of regions) {
+		if (r.shadow) {
+			// シャドウ装備（カードは無く、エンチャ3つ）
+			const sh = sm.equip.shadowRegions.find((x) => x.eqpRgnId === r.shadow);
+			if (!sh) continue;
+			const iid = model.shadowEquip?.itemId?.[r.shadow] || 0;
+			if (sh.itemId !== iid) { sh.rndOpt = (sh.rndOpt || []).map(() => ({ kind: 0, value: 0 })); sh.itemId = iid; }
+			sh.refine = model.shadowEquip?.refined?.[r.shadow] || 0;
+			sh.cardIds = r.slots.slice(1).map((s) => model.card[s] || 0);
+			continue;
+		}
 		const ent = sm.equip.itemRegions[SAVE_INDEX[r.key]];
 		if (!ent) continue;
 		if (ent.itemId !== model.equip[r.eq]) {

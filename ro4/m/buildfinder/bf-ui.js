@@ -4,7 +4,7 @@
  * シミュ専用の設定はクッキー（bf_conf）に保存する（URL出力には入れない）。
  */
 import {
-	BF_REGIONS, search, evalModel, skillTimes, nakedModel, modelFromScreen, attackSkillsOf,
+	BF_REGIONS, regionItem, getRefine, search, evalModel, skillTimes, nakedModel, modelFromScreen, attackSkillsOf,
 	itemName, cardName, itemSlotCount, loadOfficial, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped, setBuffOn,
 } from "./bf-engine.js";
 import { BF_METRICS, BF_GROUPS, BF_METRIC_BY_KEY, ELM_NAMES } from "./bf-metrics.js";
@@ -188,7 +188,7 @@ function potentialWithPartners(ids) {
 /** 装備なしの状態に、選んだ潜在解放（とセット相手）を空いたエンチャント枠へ付けたもの */
 function withPotentials(naked, ids) {
 	const m = structuredClone(naked);
-	const slots = BF_REGIONS.filter((r) => r.key !== "weapon").flatMap((r) => r.slots.slice(1)).filter((s) => !(m.card[s] > 0));
+	const slots = BF_REGIONS.filter((r) => r.key !== "weapon").flatMap((r) => r.slots.slice(1)).filter((s) => s >= 0 && !(m.card[s] > 0));
 	potentialWithPartners(ids).forEach((id, i) => { if (slots[i] != null) m.card[slots[i]] = id; });
 	return m;
 }
@@ -570,7 +570,7 @@ function renderRegions(model) {
 	regionBox.replaceChildren(h("tr", {}, h("th", {}, "部位"), LOCK_PARTS.map(([, label]) => h("th", {}, label))));
 	for (const r of BF_REGIONS) {
 		const lk = conf.regionLock[r.key] || {};
-		const cur = model?.equip?.[r.eq];
+		const cur = regionItem(model, r);
 		const empty = !cur || isRegionEmpty(model, r);
 		const nSlot = empty ? 0 : itemSlotCount(cur);
 		const ids = r.slots.map((s) => model?.card?.[s] || 0);
@@ -604,7 +604,7 @@ function renderRegions(model) {
 		})));
 	}
 }
-function regionRefine(m, r) { return r.refine === "weapon" ? m?.weapon?.atkPlus : m?.defPlus?.[r.refine]; }
+function regionRefine(m, r) { return m ? getRefine(m, r) : null; }
 
 // ---- 除外装備 ----
 function buildNg() {
@@ -779,10 +779,10 @@ function resultDetail(r) {
 	const table = h("table", { class: "bf-eqtable" },
 		h("tr", {}, h("th", {}, "部位"), h("th", {}, "装備"), h("th", {}, "カード／エンチャント 1"), h("th", {}, "2"), h("th", {}, "3"), h("th", {}, "4"), h("th", {}, "値段")));
 	for (const reg of BF_REGIONS) {
-		const iid = m.equip[reg.eq];
+		const iid = regionItem(m, reg);
 		const empty = isRegionEmpty(m, reg);
-		const itemHit = iid !== base.equip[reg.eq];
-		const refine = reg.refine === "weapon" ? m.weapon.atkPlus : reg.refine ? m.defPlus[reg.refine] : 0;
+		const itemHit = iid !== regionItem(base, reg);
+		const refine = getRefine(m, reg);
 		const pk = r.picks.find((p) => p.region.key === reg.key);
 		const itemCell = h("td", { class: "bf-eq-item" + (itemHit ? " bf-hit" : "") },
 			empty ? h("span", { class: "bf-zero" }, "なし") : [(refine ? `+${refine} ` : ""), itemName(iid)],
