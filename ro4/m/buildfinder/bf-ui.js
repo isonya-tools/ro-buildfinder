@@ -5,12 +5,15 @@
  */
 import {
 	BF_REGIONS, search, evalModel, skillTimes, nakedModel, modelFromScreen, attackSkillsOf,
-	itemName, cardName, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped, setUseTimeItems,
+	itemName, cardName, itemSlotCount, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped, setBuffOn,
 } from "./bf-engine.js";
 import { BF_METRICS, BF_GROUPS, BF_METRIC_BY_KEY, ELM_NAMES } from "./bf-metrics.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
 import { loadPrices, priceOfFactory } from "./bf-price.js";
 import { applyModelToScreen } from "./bf-apply.js";
+import { ITEM_SP_TIME_OBJ } from "../../../engine/equip/timeitem.dat.js";
+import { TIME_ITEM_DATA_INDEX_NAME, TIME_ITEM_DATA_INDEX_EXPLAIN } from "../../../engine/const/EnumTimeItemDataIndex.js";
+import { g_timeItemDataBridge } from "../../../engine/equip/CTimeItemDataBridge.js";
 
 const COOKIE = "bf_conf";
 const h = (tag, attrs = {}, ...kids) => {
@@ -45,10 +48,10 @@ const defaultConf = () => ({
 	targets: {},      // 指標キー -> 目標値
 	skillTargets: {}, // skillId -> {cf: 短縮ms, ct: 短縮ms}
 	skillShown: [],   // スキル欄に出すスキル
-	timeItems: false, // アイテム時限効果を計算に入れるか
+	buffOn: {}, // 発動バフ（時限効果ID → オン）。載っていないものはオフ
 	enchRows: null,   // [[エンチャントID, 目標の個数 or null]]（null なら今付いているものを入れる）
 	enchRemoved: [],  // 一覧から外したエンチャント（今付いていても自動では入れ直さない）
-	regionMode: {},   // regionKey -> "free" | "keep" | "lock"
+	regionLock: {},   // regionKey -> {item, refine, card, ench}（true のものだけ固定。ほかは自由）
 	ngItems: [], ngCards: [],
 	maxResults: 30, sort: "changes",
 });
@@ -60,7 +63,15 @@ function loadConf() {
 		const c = JSON.parse(decodeURIComponent(m[1]));
 		conf = { ...defaultConf(), ...c };
 		if (!conf.targets || Array.isArray(conf.targets)) conf.targets = {};
-		delete conf.cardRows; delete conf.world;
+		delete conf.cardRows; delete conf.world; delete conf.timeItems;
+		if (!conf.regionLock || typeof conf.regionLock !== "object") conf.regionLock = {};
+		// 旧形式（自由/装備だけ固定/完全固定）から移す
+		for (const [k, v] of Object.entries(c.regionMode || {})) {
+			if (v === "keep") conf.regionLock[k] = { item: true };
+			if (v === "lock") conf.regionLock[k] = { item: true, refine: true, card: true, ench: true };
+		}
+		delete conf.regionMode;
+		if (!conf.buffOn || typeof conf.buffOn !== "object") conf.buffOn = {};
 		if (conf.targets.castVary != null) delete conf.targets.castVary;
 	} catch { /* 壊れていたら既定値 */ }
 }
@@ -106,23 +117,23 @@ function showTip(e, content) {
 function hideTip() { if (tip) tip.style.display = "none"; }
 
 // ---- 画面 ----
-let root, timeBox, stateBox, enchBox, skillBox, regionBox, ngBox, progressBox, resultBox, searchBtn, stopBtn;
+let progressBar, root, timeBox, stateBox, enchBox, skillBox, regionBox, ngBox, progressBox, resultBox, searchBtn, stopBtn;
 let lastResults = null, stopFlag = false, running = false, prices = null, lastModel = null, skillList = [];
 
 export async function initBuildFinder(container) {
 	loadConf();
 	root = container;
 	root.append(
-		section("今の状態と目標", h("div", {}, timeBox = h("div", { class: "bf-timeitems" }), stateBox = h("div", { class: "bf-state" }), enchBox = h("div", { class: "bf-enchrows" }))),
+		section("今の状態と目標", h("div", {}, stateBox = h("div", { class: "bf-state" }), h("div", { class: "bf-enchrows" }, enchBox = h("div", {}), timeBox = h("div", {})))),
 		section("スキル", skillBox = h("div", { class: "bf-skills" })),
 		section("部位ごとの設定", regionBox = h("table", { class: "bf-regions" })),
 		section("除外装備", buildNg()),
 		section("検索", buildSearch()),
 		resultBox = h("div", { class: "bf-results" }),
-		licenseNote(),
 	);
-	setUseTimeItems(conf.timeItems);
-	renderTimeItems();
+	setBuffOn(conf.buffOn);
+	// 謝辞・ライセンスはページの一番下に置く
+	document.body.append(h("div", { id: "BF_FOOT" }, licenseNote()));
 	[prices] = await Promise.all([loadPrices(), loadSkillInfo()]);
 	refreshAll();
 	let timer = 0;
@@ -144,7 +155,7 @@ function licenseNote() {
 		" の計算部分を使って作っています（非営利・",
 		h("a", { href: "https://polyformproject.org/licenses/noncommercial/1.0.0", target: "_blank", rel: "noopener" }, "PolyForm Noncommercial 1.0.0"),
 		"）。ラトリオ、ラトリオ避難所、データ提供者の皆さまへの謝辞と著作権表示は ",
-		h("a", { href: "../../LICENSE", target: "_blank" }, "LICENSE"), " の Required Notice を参照。値段は公式ツールの取引履歴（ノアトゥン）から集計しています。");
+		h("a", { href: "../../LICENSE", target: "_blank" }, "LICENSE"), " の Required Notice を参照。値段は公式ツールの取引履歴から集計しています。");
 }
 
 function refreshAll() {
@@ -153,16 +164,32 @@ function refreshAll() {
 	lastModel = model;
 	renderState(model);
 	renderEnch(model);
+	renderBuffs(model);
 	renderRegions(model);
 	renderSkills(model);
 }
 
-// ---- アイテム時限効果（既定はオフ） ----
-function renderTimeItems() {
-	timeBox.replaceChildren("アイテム時限効果: ", h("span", { class: "bf-modes bf-inline" }, [[false, "オフ"], [true, "オン"]].map(([v, label]) =>
-		h("button", { type: "button", class: "bf-mode" + (conf.timeItems === v ? " on" : ""), onclick: () => {
-			conf.timeItems = v; saveConf(); setUseTimeItems(v); renderTimeItems(); refreshAll();
-		} }, label))));
+// ---- 発動バフ（らとりおの「クイック調整」と同じ中身。個別にオンオフ、既定はオフ） ----
+function renderBuffs(model) {
+	const ids = (model.timeItemConf || []).filter((id) => id > 0);
+	const setOn = (list, v) => {
+		for (const id of list) { if (v) conf.buffOn[id] = true; else delete conf.buffOn[id]; }
+		saveConf(); setBuffOn(conf.buffOn); refreshAll();
+	};
+	const toggle = (list, on) => h("span", { class: "bf-modes bf-inline" }, [[false, "OFF"], [true, "ON"]].map(([v, label]) =>
+		h("button", { type: "button", class: "bf-mode" + (on === v ? " on" : ""), onclick: () => setOn(list, v) }, label)));
+	const focus = h("button", { type: "button", class: "bf-del", onclick: () => g_timeItemDataBridge.focusArea?.(0, true) }, "設定欄を表示");
+	const rows = [h("tr", {}, h("th", {}, "アイテム時限効果調整"), h("td", {}, focus))];
+	if (ids.length) {
+		const all = ids.every((id) => conf.buffOn[id]);
+		rows.push(h("tr", {}, h("th", {}, "一斉変更"), h("td", {}, toggle(ids, all))));
+		for (const id of ids) {
+			const d = ITEM_SP_TIME_OBJ[id];
+			rows.push(h("tr", {}, h("th", { class: "bf-buffname" }, d ? `${d[TIME_ITEM_DATA_INDEX_NAME]} [${d[TIME_ITEM_DATA_INDEX_EXPLAIN]}]` : String(id)),
+				h("td", {}, toggle([id], !!conf.buffOn[id]))));
+		}
+	}
+	timeBox.replaceChildren(h("div", { class: "bf-mgroup bf-buffgroup" }, h("div", { class: "bf-mgroup-title" }, "発動バフ"), h("table", {}, rows)));
 }
 
 // ---- 今の状態と目標 ----
@@ -357,18 +384,41 @@ function skillTipContent(name, info) {
 	return box;
 }
 
-// ---- 部位ごとの設定 ----
-const MODES = [["free", "自由"], ["keep", "装備だけ固定"], ["lock", "完全固定"]];
+// ---- 部位ごとの設定（既定は自由。固定ボタンを押したものだけ固定） ----
+const LOCK_PARTS = [["item", "装備"], ["refine", "精錬値"], ["card", "カード"], ["ench", "エンチャント"]];
 function renderRegions(model) {
-	regionBox.replaceChildren(h("tr", {}, h("th", {}, "部位"), h("th", {}, "今の装備"), h("th", {}, "扱い")));
+	regionBox.replaceChildren(h("tr", {}, h("th", {}, "部位"), LOCK_PARTS.map(([, label]) => h("th", {}, label))));
 	for (const r of BF_REGIONS) {
-		const mode = conf.regionMode[r.key] || "free";
+		const lk = conf.regionLock[r.key] || {};
 		const cur = model?.equip?.[r.eq];
-		const btns = h("div", { class: "bf-modes" }, MODES.map(([k, label]) => h("button", { type: "button", class: "bf-mode" + (k === mode ? " on" : ""),
-			onclick: () => { conf.regionMode[r.key] = k; saveConf(); renderRegions(lastModel); } }, label)));
-		regionBox.append(h("tr", {}, h("td", {}, r.label), h("td", {}, cur && !isRegionEmpty(model, r) ? itemName(cur) : "—"), h("td", {}, btns)));
+		const empty = !cur || isRegionEmpty(model, r);
+		const nSlot = empty ? 0 : itemSlotCount(cur);
+		const ids = r.slots.map((s) => model?.card?.[s] || 0);
+		const names = (list) => list.filter((c) => c > 0).map(cardName).join(" / ") || "—";
+		const text = {
+			item: empty ? "—" : itemName(cur),
+			refine: r.refine ? "+" + (regionRefine(model, r) ?? 0) : "—",
+			card: names(ids.slice(0, nSlot)),
+			ench: names(ids.slice(nSlot)),
+		};
+		// カードかエンチャントを固定したら、それが付いている装備も固定になる
+		const itemForced = !!(lk.card || lk.ench);
+		regionBox.append(h("tr", {}, h("td", {}, r.label), LOCK_PARTS.map(([part]) => {
+			if (part === "refine" && !r.refine) return h("td", { class: "bf-dim" }, "—");
+			const on = !!lk[part] || (part === "item" && itemForced);
+			const btn = h("button", { type: "button", class: "bf-lock" + (on ? " on" : ""), disabled: part === "item" && itemForced,
+				title: part === "item" && itemForced ? "カードかエンチャントを固定しているので装備も固定です" : "",
+				onclick: () => {
+					const x = { ...(conf.regionLock[r.key] || {}) };
+					if (x[part]) delete x[part]; else x[part] = true;
+					if (Object.keys(x).length) conf.regionLock[r.key] = x; else delete conf.regionLock[r.key];
+					saveConf(); renderRegions(lastModel);
+				} }, on ? "固定中" : "固定");
+			return h("td", { class: "bf-lockcell" + (on ? " bf-locked" : "") }, h("span", { class: "bf-lockval" }, text[part]), btn);
+		})));
 	}
 }
+function regionRefine(m, r) { return r.refine === "weapon" ? m?.weapon?.atkPlus : m?.defPlus?.[r.refine]; }
 
 // ---- 除外装備 ----
 function buildNg() {
@@ -411,10 +461,11 @@ function buildSearch() {
 	searchBtn = h("button", { type: "button", class: "bf-go", onclick: runSearch }, "検索");
 	stopBtn = h("button", { type: "button", class: "bf-stop", disabled: true, onclick: () => { stopFlag = true; } }, "止める");
 	progressBox = h("div", { class: "bf-progress" });
+	progressBar = h("div", { class: "bf-bar", hidden: true }, h("div", { class: "bf-bar-fill" }), h("span", { class: "bf-bar-pct" }));
 	return h("div", {},
 		h("div", { class: "bf-opts" }, h("label", {}, "表示件数: ", maxIn)),
 		h("div", { class: "bf-actions" }, searchBtn, stopBtn),
-		progressBox);
+		progressBar, progressBox);
 }
 
 function buildConds() {
@@ -446,16 +497,19 @@ async function runSearch() {
 	running = true; stopFlag = false;
 	searchBtn.disabled = true; stopBtn.disabled = false;
 	resultBox.replaceChildren();
+	lastResults = null; openSigs.clear();
+	barMax = 0; progressBar.hidden = false; setBar(0);
 	const t0 = performance.now();
 	try {
 		const res = await search({
 			conds, skillLv,
-			locked: BF_REGIONS.filter((r) => conf.regionMode[r.key] === "lock").map((r) => r.key),
-			keepItem: BF_REGIONS.filter((r) => conf.regionMode[r.key] === "keep").map((r) => r.key),
+			lock: conf.regionLock,
 			ngItems: conf.ngItems, ngCards: conf.ngCards,
 			maxResults: conf.maxResults,
 			priceOf: priceOfFactory(prices),
-			onProgress: (text, ratio) => { progressBox.textContent = `${text}（${Math.round(ratio * 100)}%）`; },
+			onProgress: (text, ratio) => { progressBox.textContent = text; setBar(ratio); },
+			// 見つかったものから順に結果に出す
+			onResults: (results, ctx) => { lastResults = { results, ...ctx, conds }; renderResults(); },
 			shouldStop: () => stopFlag,
 		});
 		lastResults = { ...res, conds };
@@ -467,7 +521,16 @@ async function runSearch() {
 		else { progressBox.textContent = "エラー: " + e.message; console.error(e); }
 	} finally {
 		running = false; searchBtn.disabled = false; stopBtn.disabled = true;
+		progressBar.hidden = true;
 	}
+}
+/** 進捗バー（戻らないように最大値で表示） */
+let barMax = 0;
+function setBar(ratio) {
+	barMax = Math.max(barMax, Number(ratio) || 0);
+	const pct = Math.floor(barMax * 100);
+	progressBar.firstChild.style.width = pct + "%";
+	progressBar.lastChild.textContent = pct + "%";
 }
 
 // ---- 結果 ----
@@ -480,6 +543,8 @@ function newThings(r) {
 	}
 	return out;
 }
+const openSigs = new Set(); // 開いている結果（作り直しても開いたままにする）
+const sigOf = (r) => JSON.stringify([r.model.equip, r.model.card]);
 function renderResults() {
 	if (!lastResults) return;
 	const { results } = lastResults;
@@ -497,10 +562,14 @@ function resultRow(r, i) {
 	const things = newThings(r);
 	const detail = h("div", { class: "bf-res-detail" });
 	const row = h("div", { class: "bf-res" });
-	const line = h("button", { type: "button", class: "bf-res-line", onclick: () => {
-		const open = row.classList.toggle("open");
+	const sig = sigOf(r);
+	const toggle = (open) => {
+		row.classList.toggle("open", open);
+		if (open) openSigs.add(sig); else openSigs.delete(sig);
 		if (open && !detail.childNodes.length) detail.append(resultDetail(r));
-	} },
+	};
+	if (openSigs.has(sig)) queueMicrotask(() => toggle(true));
+	const line = h("button", { type: "button", class: "bf-res-line", onclick: () => toggle(!row.classList.contains("open")) },
 	h("span", { class: "bf-res-no" }, "#" + (i + 1)),
 	h("span", { class: "bf-res-chg" }, `${r.changes}か所`),
 	h("span", { class: "bf-res-price" }, priceText(r)),

@@ -55,7 +55,9 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 
 /* 今の状態と目標 */
 #BF_ROOT .bf-metrics { display: flex; flex-wrap: nowrap; gap: 10px 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 4px; }
-#BF_ROOT .bf-enchrows { margin-top: 10px; }
+#BF_ROOT .bf-enchrows { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-start; }
+#BF_ROOT .bf-buffgroup td { text-align: left; }
+#BF_ROOT .bf-buffname { font-size: 12px; white-space: normal; max-width: 420px; }
 #BF_ROOT .bf-enchgroup { display: inline-block; }
 #BF_ROOT .bf-del { border: 1px solid var(--bf-line); background: none; color: var(--bf-dim); font-size: 12px; padding: 0 6px; }
 #BF_ROOT .bf-del:hover { color: var(--bf-ng); }
@@ -74,7 +76,6 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT .bf-skilltable td:first-child { padding-right: 18px; }
 #BF_ROOT .bf-skilltable { border-collapse: collapse; width: auto; }
 #BF_ROOT .bf-skilladd { margin-top: 6px; width: 360px; }
-#BF_ROOT .bf-timeitems { margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
 #BF_ROOT .bf-modes.bf-inline { display: inline-flex; }
 #BF_ROOT .bf-skilltable thead th { position: sticky; top: 0; background: var(--bf-panel2); z-index: 1; font-weight: normal; color: var(--bf-dim); font-size: 12px; padding: 3px 6px; }
 #BF_ROOT .bf-skilltable td { padding: 2px 6px; border-top: 1px solid var(--bf-line); white-space: nowrap; text-align: right; }
@@ -95,6 +96,13 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT .bf-regions th, #BF_ROOT .bf-regions td { border: 1px solid var(--bf-line); padding: 3px 8px; text-align: left; }
 #BF_ROOT .bf-regions th { background: var(--bf-panel2); font-weight: normal; color: var(--bf-dim); }
 #BF_ROOT .bf-modes { display: flex; gap: 0; }
+#BF_ROOT .bf-lockcell { white-space: nowrap; }
+#BF_ROOT .bf-lockval { display: inline-block; max-width: 260px; overflow: hidden; text-overflow: ellipsis; vertical-align: middle; margin-right: 8px; white-space: nowrap; }
+#BF_ROOT .bf-lock { padding: 1px 8px; border: 1px solid var(--bf-line); background: var(--bf-input); color: var(--bf-dim); font-size: 12px; vertical-align: middle; }
+#BF_ROOT .bf-lock.on { background: var(--bf-accent); color: #1a1205; border-color: var(--bf-accent); font-weight: bold; }
+#BF_ROOT .bf-lock:disabled { opacity: .7; cursor: default; }
+#BF_ROOT .bf-locked .bf-lockval { color: var(--bf-accent2); }
+#BF_ROOT td.bf-dim { color: var(--bf-dim); }
 #BF_ROOT .bf-mode { padding: 2px 12px; border: 1px solid var(--bf-line); background: var(--bf-input); color: var(--bf-dim); margin-left: -1px; }
 #BF_ROOT .bf-mode.on { background: var(--bf-accent); color: #1a1205; border-color: var(--bf-accent); font-weight: bold; position: relative; }
 
@@ -138,7 +146,7 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT tr.bf-changed .bf-cur:not(.bf-before) { font-weight: bold; }
 #BF_ROOT tr.bf-changed th { color: #ffd28a; }
 #BF_ROOT .bf-before { color: var(--bf-dim) !important; }
-#BF_ROOT .bf-license { margin: 16px 0 0; font-size: 12px; color: var(--bf-dim); border-top: 1px solid var(--bf-line); padding-top: 8px; }
+#BF_FOOT .bf-license { margin: 16px; max-width: 1200px; font-size: 12px; color: var(--bf-dim); border-top: 1px solid var(--bf-line); padding-top: 8px; }
 
 /* ツールチップ */
 .bf-tip { position: fixed; z-index: 10000; display: none; max-width: 560px; background: var(--bf-panel2); color: var(--bf-text); border: 1px solid var(--bf-accent); padding: 8px 10px; font-size: 13px; line-height: 1.5; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
@@ -152,3 +160,9 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT .bf-ngsel .ts-wrapper { min-width: 420px; }
 .CSSCLS_DIV_FLOATING_MENU, .folding-block-MIG { background-color: var(--bf-panel2) !important; color: var(--bf-text) !important; }
 #BF_ROOT .bf-eqtable td.bf-eq-price { text-align: right; color: var(--bf-accent); }
+
+/* 進捗バー */
+#BF_ROOT .bf-bar { position: relative; height: 18px; max-width: 520px; margin-top: 8px; background: var(--bf-input); border: 1px solid var(--bf-line); }
+#BF_ROOT .bf-bar[hidden] { display: none; }
+#BF_ROOT .bf-bar-fill { height: 100%; width: 0; background: var(--bf-accent); transition: width .2s; }
+#BF_ROOT .bf-bar-pct { position: absolute; inset: 0; text-align: center; font-size: 12px; line-height: 18px; color: var(--bf-text, #e8e8e8); mix-blend-mode: difference; }

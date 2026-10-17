@@ -1,5 +1,5 @@
 // RO BuildFinder: 計算処理の中で装備IDを直接見ている（データのSPに出てこない効果を持つ）装備・カードの一覧を作る
-// node ro4/m/buildfinder/tools-bf-hard.mjs > ro4/m/buildfinder/bf-hard.json
+// node ro4/m/buildfinder/tools-bf-hard.mjs > /tmp/bf-hard.json && mv /tmp/bf-hard.json ro4/m/buildfinder/bf-hard.json（probe を引き継ぐので直接リダイレクトしない）
 import fs from 'fs'; import path from 'path';
 const root = new URL('../../../engine', import.meta.url).pathname;
 const I = {}, C = {};
@@ -30,4 +30,6 @@ for (const f of walk(root)) {
 	for (const k of cats) { it.forEach((x) => out[k].items.add(x)); cd.forEach((x) => out[k].cards.add(x)); }
 }
 for (const k of Object.keys(out)) out[k] = { items: [...out[k].items].sort((a, b) => a - b), cards: [...out[k].cards].sort((a, b) => a - b) };
+// 実際に装備して調べた結果（tools-bf-probe.js）は前のファイルから引き継ぐ
+try { const prev = JSON.parse(fs.readFileSync(new URL('./bf-hard.json', import.meta.url), 'utf8')); if (prev.probe) out.probe = prev.probe; } catch { /* 初回 */ }
 process.stdout.write(JSON.stringify(out));

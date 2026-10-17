@@ -3,7 +3,8 @@
  *
  * 1. データの効果（SP）に、目標の指標を上げるものが含まれるか
  * 2. 計算処理の中でIDを直接見ている（データのSPに出てこない効果を持つ）ものは、
- *    bf-hard.json（tools-bf-hard.mjs で作成）の分類で判定
+ *    実際に1つずつ装備して、どの指標が変わったか（bf-hard.json の probe。tools-bf-probe.js で作成）で判定。
+ *    スキルの詠唱・CTは指標が多いので、ファイル単位の分類（tools-bf-hard.mjs）で判定
  * 3. 目標のエンチャントそのもの、それが付く装備
  * 4. 「リフレッシュ状態になる」効果
  * のどれかに当たるものだけを、実際に計算して確かめる対象にする。
@@ -44,14 +45,18 @@ const HARD_CAT = (key) => {
 	return "stat";
 };
 
-let hard = null;
+let hard = null, hardProbe = null;
 export async function loadHard() {
 	if (hard) return hard;
 	try {
 		const res = await fetch(new URL("./bf-hard.json", import.meta.url));
 		hard = res.ok ? await res.json() : {};
 	} catch { hard = {}; }
+	const probe = hard.probe || {};
+	delete hard.probe;
 	for (const k of Object.keys(hard)) hard[k] = { items: new Set(hard[k].items), cards: new Set(hard[k].cards) };
+	hardProbe = {};
+	for (const k of Object.keys(probe)) hardProbe[k] = { items: new Set(probe[k].items), cards: new Set(probe[k].cards) };
 	return hard;
 }
 
@@ -76,11 +81,14 @@ const cardPairs = (id) => spPairs(CardObjNew[id], 5);
 export function makeRelevance(keys) {
 	const spSet = new Set();
 	const cats = new Set();
+	const probeKeys = new Set(); // 実際に装備して変わった指標で判定するもの
 	const targetCards = new Set();
 	let refresh = false;
 	for (const key of keys) {
 		const cat = HARD_CAT(key);
-		if (cat) cats.add(cat);
+		if (cat === "cast" && key.startsWith("sk:")) cats.add(cat);
+		else if (key.startsWith("elm:")) probeKeys.add("bodyElm");
+		else if (cat) probeKeys.add(key);
 		if (key === "refresh") refresh = true;
 		else if (key.startsWith("card:")) targetCards.add(Number(key.slice(5)));
 		else if (key.startsWith("elm:")) spSet.add(198);
@@ -94,6 +102,7 @@ export function makeRelevance(keys) {
 	const hit = (pairs) => pairs.some(([code, v]) => v !== 0 && spSet.has(code % 100000));
 	const inHard = (kind, id) => {
 		for (const c of cats) if (hard?.[c]?.[kind]?.has(id)) return true;
+		for (const k of probeKeys) if (hardProbe?.[k]?.[kind]?.has(id)) return true;
 		return false;
 	};
 	const memo = new Map();
