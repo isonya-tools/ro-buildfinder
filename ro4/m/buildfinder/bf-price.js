@@ -8,6 +8,8 @@ import { itemName, cardName } from "./bf-engine.js";
 
 const SLOT_RE = /^(.*)\[(\d+)\]$/;
 const norm = (s) => String(s ?? "").replace(/\s+/g, "").replace(SLOT_RE, "$1");
+// 値段データのカード名は「イーブルカード」、ラトリオは「イーブル」なので、末尾の「カード」を外して比べる
+const cardNorm = (s) => norm(s).replace(/カード$/, "");
 
 export async function loadPrices() {
 	try {
@@ -21,7 +23,7 @@ export async function loadPrices() {
 		const data = JSON.parse(text);
 		const byName = new Map();
 		for (const [oid, it] of Object.entries(data.items || {})) {
-			const base = norm(it.n);
+			const base = it.k === "c" ? "c:" + cardNorm(it.n) : norm(it.n);
 			if (!byName.has(base)) byName.set(base, []);
 			byName.get(base).push({ oid, ...it, rows: data.g?.[oid] || [] });
 		}
@@ -42,21 +44,22 @@ export function priceOfFactory(prices) {
 	if (!prices) return () => null;
 	const cache = new Map();
 	const cands = (name) => prices.byName.get(norm(name)) || [];
+	const cardCands = (name) => prices.byName.get("c:" + cardNorm(name)) || [];
 	return (kind, id, ench, refine = 0) => {
 		const key = kind + ":" + id + (ench ? ":" + ench.join(",") + ":" + refine : "");
 		if (cache.has(key)) return cache.get(key);
 		let v = null;
 		if (kind === "item" || kind === "card") {
-			for (const c of cands(kind === "item" ? itemName(id) : cardName(id))) {
+			for (const c of kind === "item" ? cands(itemName(id)) : cardCands(cardName(id))) {
 				const p = c.p?.[0];
 				if (p != null && (v == null || p < v)) v = p;
 			}
 		} else if (kind === "itemEnch") {
-			const need = ench.map((cid) => norm(cardName(cid)));
+			const need = ench.map((cid) => cardNorm(cardName(cid)));
 			for (const c of cands(itemName(id))) {
 				for (const row of c.rows) {
 					if ((Number(row[0]) || 0) < refine) continue;
-					const have = row.slice(1, 5).map(norm);
+					const have = row.slice(1, 5).map(cardNorm);
 					const ok = need.every((n) => { const i = have.indexOf(n); if (i < 0) return false; have[i] = null; return true; });
 					if (ok && (v == null || row[5] < v)) v = row[5];
 				}
@@ -70,6 +73,6 @@ export function priceOfFactory(prices) {
 /** 値段データのある装備・カードの割合（確認用） */
 export function priceCoverage(prices, names) {
 	let hit = 0;
-	for (const n of names) if (prices?.byName.has(norm(n))) hit++;
+	for (const n of names) if (prices?.byName.has(norm(n)) || prices?.byName.has("c:" + cardNorm(n))) hit++;
 	return hit / (names.length || 1);
 }
