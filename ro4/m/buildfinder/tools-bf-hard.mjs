@@ -30,6 +30,40 @@ for (const f of walk(root)) {
 	for (const k of cats) { it.forEach((x) => out[k].items.add(x)); cd.forEach((x) => out[k].cards.add(x)); }
 }
 for (const k of Object.keys(out)) out[k] = { items: [...out[k].items].sort((a, b) => a - b), cards: [...out[k].cards].sort((a, b) => a - b) };
+// スキルごとの詠唱・CT: skill-cast-param.js / skill-cool.js の中で「skillId == SKILL_ID_◯◯」の枠の中で見ている装備・カード
+const S = {};
+for (const l of fs.readFileSync(root + '/skill/skill.dat.js', 'utf8').split('\n')) { const m = l.match(/^export const (SKILL_ID_\w+)\s*=\s*(\d+);/); if (m) S[m[1]] = +m[2]; }
+const bySkill = {};
+for (const f of ['status/skill-cast-param.js', 'status/skill-cool.js']) {
+	const t = fs.readFileSync(root + '/' + f, 'utf8');
+	const fstart = t.search(/\n(export\s+)?(async\s+)?function\b/);
+	for (const m of t.matchAll(/\b(?:ITEM_ID|ITEM_SET_ID|CARD_ID|CARD_SET_ID)_\w+|EquipNumSearch\((\d+)|CardNumSearch\((\d+)/g)) {
+		if (m.index < fstart) continue;
+		const isCard = /^CARD_|^CardNum/.test(m[0]);
+		const id = m[1] ? +m[1] : m[2] ? +m[2] : isCard ? C[m[0]] : I[m[0]];
+		if (id == null) continue;
+		// 囲んでいるブロックの見出しを外側へたどり、最初に SKILL_ID が出てきたものを対象スキルとする
+		let depth = 0, skills = [];
+		for (let i = m.index; i >= 0; i--) {
+			const ch = t[i];
+			if (ch === '}') depth++;
+			else if (ch === '{') {
+				if (depth > 0) { depth--; continue; }
+				const lineStart = t.lastIndexOf('\n', i - 1);
+				const head = t.slice(t.lastIndexOf('\n', lineStart - 1), i);
+				const ss = [...head.matchAll(/SKILL_ID_\w+/g)].map((x) => S[x[0]]).filter((x) => x != null);
+				if (ss.length) { skills = ss; break; }
+				if (/^\s*(export\s+)?function\b/m.test(head)) break;
+			}
+		}
+		for (const sid of skills.length ? skills : ['any']) {
+			const e = bySkill[sid] ??= { items: new Set(), cards: new Set() };
+			e[isCard ? 'cards' : 'items'].add(id);
+		}
+	}
+}
+out.castBySkill = Object.fromEntries(Object.entries(bySkill).map(([k, v]) => [k, { items: [...v.items].sort((a, b) => a - b), cards: [...v.cards].sort((a, b) => a - b) }]));
+
 // 実際に装備して調べた結果（tools-bf-probe.js）は前のファイルから引き継ぐ
 try { const prev = JSON.parse(fs.readFileSync(new URL('./bf-hard.json', import.meta.url), 'utf8')); if (prev.probe) out.probe = prev.probe; } catch { /* 初回 */ }
 process.stdout.write(JSON.stringify(out));

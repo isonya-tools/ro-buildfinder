@@ -63,15 +63,17 @@ function setRefine(m, r, v) { if (r.refine === "weapon") m.weapon.atkPlus = v; e
  * 計算処理が精錬値を見る装備）と、エンチャントの精錬値の条件。精錬できない部位は+0だけ。
  */
 const refineLevelCache = new Map();
-function refineLevelsOf(r, iid) {
+/** codeOk(SPコード): 目標に関係する効果だけ見るときの判定（省略時は全部） */
+function refineLevelsOf(r, iid, codeOk = null) {
 	if (!r.refine) return [0];
 	const key = r.key + ":" + iid;
-	if (refineLevelCache.has(key)) return refineLevelCache.get(key);
+	if (!codeOk && refineLevelCache.has(key)) return refineLevelCache.get(key);
 	const set = new Set([0]);
 	const row = ItemObjNew[iid] || [];
 	for (let i = 11; i + 1 < row.length; i += 2) {
 		const code = row[i];
 		if (typeof code !== "number" || code === 0) break;
+		if (codeOk && !codeOk(code)) continue;
 		const x = code % 100000000;
 		const over = Math.floor(x / 1000000);
 		if (over >= 1) { set.add(over); set.add(Math.min(20, over + 1)); }
@@ -80,7 +82,7 @@ function refineLevelsOf(r, iid) {
 	if (isHardItem(iid)) for (const v of [7, 9, 10, 11]) set.add(v);
 	for (const m of enchantDetailOf(iid)) for (const need of m.values()) if (need > 0) set.add(need);
 	const out = [...set].filter((v) => v <= 20).sort((a, b) => a - b);
-	refineLevelCache.set(key, out);
+	if (!codeOk) refineLevelCache.set(key, out);
 	return out;
 }
 
@@ -330,7 +332,7 @@ export async function search(opt) {
 	const zero = () => keys.map(() => 0);
 
 	// ---- 候補の絞り込み ----
-	onProgress("目標に関係する装備を絞り込んでいます", 0);
+	onProgress("候補を調べています", 0);
 	const L = Object.fromEntries(BF_REGIONS.map((r) => {
 		const x = lock[r.key] || {};
 		return [r.key, { item: !!(x.item || x.card || x.ench), refine: !!x.refine, card: !!x.card, ench: !!x.ench }];
@@ -391,15 +393,17 @@ export async function search(opt) {
 		const r = regions[ri];
 		const curItem = isRegionEmpty(base, r) ? 0 : base.equip[r.eq];
 		const curCards = r.slots.map((s) => base.card[s] || 0);
-		onProgress(`${r.label}：確認中`, done / totalWork);
+		onProgress("候補を調べています", done / totalWork);
 
 		// 部位を空にした状態（入れ替え時のカード・エンチャの差分の基準）
 		const cleared = cloneModel(base);
 		clearRegion(cleared, r);
 		const clearedVal = evalM(cleared);
+		const clearedD = vecFrom(clearedVal, baseVal);
 		const cardDelta = new Map();
 		const slotDelta = (s, cid) => {
-			const key = s + ":" + cid;
+			// 効果はどの枠に挿しても同じなので、エンチャント・カードごとに1回だけ計算する
+			const key = cid;
 			if (!cardDelta.has(key)) {
 				const m = cloneModel(cleared);
 				m.card[r.slots[s]] = cid;
@@ -464,21 +468,29 @@ export async function search(opt) {
 		for (const iid of regionItems[ri]) {
 			await tick();
 			done++;
-			if (done % 10 === 0) onProgress(`${r.label}：装備を確認中（${itemName(iid)}）`, done / totalWork);
+			if (done % 10 === 0) onProgress("候補を調べています", done / totalWork);
 			if (iid === curItem) continue;
-			// 精錬値は+0が基本。過剰精錬で効果が変わるとき・エンチャントに精錬値の条件があるときだけ、その精錬値も候補にする
+			// 精錬値は+0が基本。過剰精錬で目標の効果が変わるとき・エンチャントに精錬値の条件があるときだけ、その精錬値も候補にする。
+			// 装備自体に目標の効果が無い（エンチャントやカード枠のために入れた）ものは計算せず、部位を空にしたときと同じとみなす
+			const selfRel = rel.item(iid);
+			const levels = L[r.key].refine ? [getRefine(base, r)]
+				: selfRel ? refineLevelsOf(r, iid, rel.code)
+				: [...new Set([0, ...enchantDetailOf(iid).flatMap((mm) => [...mm.values()])])].filter((v) => v <= 20 && r.refine || v === 0).sort((a, b) => a - b);
 			let prevD = null, prevEnch = -1;
-			for (const lv of (L[r.key].refine ? [getRefine(base, r)] : refineLevelsOf(r, iid))) {
-				const m = cloneModel(cleared);
-				placeItem(m, r, iid, lv);
-				const d = vecFrom(evalM(m), baseVal);
+			for (const lv of levels) {
+				let d = clearedD;
+				if (selfRel) {
+					const m = cloneModel(cleared);
+					placeItem(m, r, iid, lv);
+					d = vecFrom(evalM(m), baseVal);
+				}
 				const slotChoices = await slotChoicesFor(ctx, iid, lv);
 				const nEnch = slotChoices.reduce((a, o) => a + o.length, 0);
 				if (prevD && nEnch === prevEnch && d.every((x, i) => Math.abs(x - prevD[i]) < 1e-9)) continue;
 				prevD = d; prevEnch = nEnch;
 				if (!relevant(d) && !slotChoices.some((o) => o.length)) continue;
 				// 同じ性能なら精錬値の低い方が残るように、精錬値ぶんだけ値段を重くして比べる
-				const itemPrice = (priceOf("item", iid) ?? 0) + lv;
+				const itemPrice = (priceOf("item", iid) ?? UNKNOWN_PRICE) + lv;
 				for (const v of expandSlots(r, d, slotChoices, priceOf, need, itemPrice)) {
 					variants.push({ region: r, keep: false, itemId: iid, refine: lv, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1, twoHand: r.key === "weapon" && isTwoHanded(iid), usesShield: r.key === "shield" });
 				}
@@ -496,7 +508,7 @@ export async function search(opt) {
 	for (const S of sets) {
 		await tick();
 		done++;
-		if (done % 10 === 0) onProgress("セット効果を確認中", done / totalWork);
+		if (done % 10 === 0) onProgress("候補を調べています", done / totalWork);
 		const assign = [];
 		const used = new Set();
 		let ok = true;
@@ -539,7 +551,7 @@ export async function search(opt) {
 			if (a.already) vs = ctx.keepVariants.map((v) => ({ ...v }));
 			else {
 				const slotChoices = await slotChoicesFor(ctx, a.itemId, a.refine);
-				vs = expandSlots(a.region, zero(), slotChoices, priceOf, need, priceOf("item", a.itemId) ?? 0).map((v) => ({
+				vs = expandSlots(a.region, zero(), slotChoices, priceOf, need, priceOf("item", a.itemId) ?? UNKNOWN_PRICE).map((v) => ({
 					region: a.region, keep: false, itemId: a.itemId, refine: a.refine, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1,
 					twoHand: a.region.key === "weapon" && isTwoHanded(a.itemId), usesShield: a.region.key === "shield",
 				}));
@@ -555,19 +567,26 @@ export async function search(opt) {
 		pkgCount++;
 	}
 
-	// ---- 組み合わせ探索（深さ優先＋上限による枝刈り） ----
+	// ---- 組み合わせ探索 ----
+	// 変える部位の数が少ない順（0か所→1か所→…）に探し、その数の中では深さ優先＋上限による枝刈り。
+	// 結果は「変更が少ない順→安い順」なので、ある数で表示件数がそろったら、それより多い数は探さない
 	phase = [0.75, 1];
 	onProgress("組み合わせを探しています", 0);
 	const weaponLocked = !regionIndex.has("weapon");
 	const n = regionVariants.length;
-	const maxRest = [];
-	let acc = zero();
-	for (let i = n - 1; i >= 0; i--) {
-		const best = keys.map((_, k) => Math.max(...regionVariants[i].map((v) => v.d[k])));
-		acc = acc.map((x, k) => x + best[k]);
-		maxRest[i] = acc;
+	// 部位ごとの、目標ごとの一番大きい伸び
+	const bestOf = regionVariants.map((list) => keys.map((_, k) => Math.max(0, ...list.map((v) => v.d[k]))));
+	// topSum[i][k][b]: 部位 i 以降から b か所選んだときの伸びの上限
+	const topSum = [];
+	for (let i = 0; i <= n; i++) {
+		topSum[i] = keys.map((_, k) => {
+			const arr = bestOf.slice(i).map((x) => x[k]).sort((x, y) => y - x);
+			const pre = [0];
+			for (const x of arr) pre.push(pre[pre.length - 1] + x);
+			return pre;
+		});
 	}
-	maxRest[n] = zero();
+	const upper = (i, k, b) => { const pre = topSum[i][k]; return pre[Math.min(b, pre.length - 1)]; };
 
 	// 見つけた組み合わせは、その場で実計算で確かめて結果に入れる（onResults で途中経過を返す）
 	const costOf = (f) => f.picks.reduce((a, v) => a + v.price, 0);
@@ -576,7 +595,6 @@ export async function search(opt) {
 	const results = [];
 	const seen = new Set();
 	let foundCount = 0;
-	const limit = maxResults * 20;
 	let lastEmit = 0;
 	const emit = (force) => {
 		if (!force && performance.now() - lastEmit < 500) return;
@@ -617,43 +635,56 @@ export async function search(opt) {
 	const pick = [];
 	const req = new Array(n).fill(null); // セットで決まっている部位
 	let nodes = 0;
-	const dfsPos = [0, 0];
-	const dfs = async (i, sum, twoHand) => {
-		if (++nodes % 2000 === 0) await tick();
-		if (foundCount >= limit) return;
-		for (let k = 0; k < keys.length; k++) if (sum[k] + maxRest[i][k] < need[k] - 1e-9) return;
+	let budget = 0, levelLeaves = 0;
+	// 足し算の見込みでは届くのに実計算では届かない構成が続くときに、探し続けないための上限
+	const levelLimit = maxResults * 50, totalLimit = maxResults * 80;
+	const dfs = async (i, sum, twoHand, changes, cost) => {
+		if (++nodes % 2000 === 0) {
+			await tick();
+			onProgress(results.length ? `組み合わせを探しています（${results.length}件）` : "組み合わせを探しています", Math.min(0.95, (budget + 0.5) / (n + 1)));
+		}
+		if (levelLeaves >= levelLimit || foundCount >= totalLimit) return;
+		const left = budget - changes;
+		if (left < 0) return;
+		for (let k = 0; k < keys.length; k++) if (sum[k] + upper(i, k, left) < need[k] - 1e-9) return;
+		// 表示件数がそろっていて、今の一番下より高くなるなら打ち切り
+		if (results.length >= maxResults) {
+			const w = results[results.length - 1];
+			if (w.changes < budget || (w.changes === budget && cost >= w.cost)) return;
+		}
 		if (i === n) {
+			if (changes !== budget) return;
 			// 盾を固定しているのに両手武器を選んだ構成は除く
 			if (twoHand && shieldLocked && baseShield) return;
-			foundCount++;
+			foundCount++; levelLeaves++;
 			await tick();
 			verify(pick.slice());
 			return;
 		}
 		const must = req[i];
-		const list = regionVariants[i];
-		for (let vi = 0; vi < list.length; vi++) {
-			const v = list[vi];
-			// 上2部位の何番目まで調べたかで進み具合を出す
-			if (i === 0) dfsPos[0] = vi / list.length;
-			else if (i === 1) { dfsPos[1] = vi / list.length; if (vi % 5 === 0) onProgress(`組み合わせを探しています（${results.length}件見つかりました）`, dfsPos[0] + dfsPos[1] / regionVariants[0].length); }
+		for (const v of regionVariants[i]) {
 			if (must) { if (v.pkg !== must) continue; }
 			else if (v.pkg) {
 				if (!v.pkgHead) continue;
 				if (v.pkg.regions.some((j) => j > i && req[j])) continue;
 			}
+			if (changes + v.changed > budget) continue;
 			let th = twoHand;
 			if (v.region.key === "weapon") th = v.twoHand;
 			if (v.region.key === "shield" && v.usesShield && th) continue;
 			if (v.pkgHead) for (const j of v.pkg.regions) if (j > i) req[j] = v.pkg;
 			pick.push(v);
-			await dfs(i + 1, sum.map((x, k) => x + v.d[k]), th);
+			await dfs(i + 1, sum.map((x, k) => x + v.d[k]), th, changes + v.changed, cost + v.price);
 			pick.pop();
 			if (v.pkgHead) for (const j of v.pkg.regions) if (j > i) req[j] = null;
-			if (foundCount >= limit) return;
+			if (levelLeaves >= levelLimit || foundCount >= totalLimit) return;
 		}
 	};
-	await dfs(0, zero(), weaponLocked ? isTwoHanded(baseWeapon) : false);
+	for (budget = 0; budget <= n; budget++) {
+		levelLeaves = 0;
+		await dfs(0, zero(), weaponLocked ? isTwoHanded(baseWeapon) : false, 0, 0);
+		if (results.length >= maxResults || foundCount >= totalLimit) break;
+	}
 
 	emit(true);
 	return { results, baseVal, base, candidates: foundCount, stats: { items: regionItems.reduce((a, l) => a + l.length, 0), cards: regionCards.reduce((a, l) => a + l.length, 0), sets: sets.length, packages: pkgCount } };
@@ -688,6 +719,8 @@ function pickPrice(v, priceOf) {
 }
 
 /** 部位の4枠（カード＋エンチャ3枠）の選び方を展開する（劣るものは途中で捨てる） */
+/** 値段が分からない物は、並べるときに値段の分かる物より後ろにする */
+const UNKNOWN_PRICE = 1e12;
 function expandSlots(region, d0, slotChoices, priceOf, need, price0) {
 	let partial = [{ cards: [], d: d0.slice(), price: price0 }];
 	for (let s = 0; s < slotChoices.length; s++) {
@@ -697,7 +730,7 @@ function expandSlots(region, d0, slotChoices, priceOf, need, price0) {
 		for (const pv of partial) {
 			next.push(pv);
 			for (const o of opts) {
-				next.push({ cards: [...pv.cards, [region.slots[s], o.id]], d: pv.d.map((x, i) => x + o.d[i]), price: pv.price + (isEnchant(o.id) ? 0 : priceOf("card", o.id) ?? 0) });
+				next.push({ cards: [...pv.cards, [region.slots[s], o.id]], d: pv.d.map((x, i) => x + o.d[i]), price: pv.price + (isEnchant(o.id) ? 0 : priceOf("card", o.id) ?? UNKNOWN_PRICE) });
 			}
 		}
 		partial = paretoPrune(next, need);

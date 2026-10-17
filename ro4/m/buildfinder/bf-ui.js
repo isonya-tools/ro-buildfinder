@@ -410,7 +410,7 @@ function renderRegions(model) {
 			if (allOn) delete conf.regionLock[r.key]; else conf.regionLock[r.key] = { ...ALL_LOCK };
 			saveConf(); renderRegions(lastModel);
 		} }, allOn ? "固定中" : "固定");
-		regionBox.append(h("tr", {}, h("td", { class: "bf-lockcell" + (allOn ? " bf-locked" : "") }, h("span", { class: "bf-lockval" }, r.label), regionBtn), LOCK_PARTS.map(([part]) => {
+		regionBox.append(h("tr", {}, h("td", { class: "bf-lockcell" + (allOn ? " bf-locked" : "") }, regionBtn, h("span", { class: "bf-lockval" }, r.label)), LOCK_PARTS.map(([part]) => {
 			if (part === "refine" && !r.refine) return h("td", { class: "bf-dim" }, "—");
 			const on = !!lk[part] || (part === "item" && itemForced);
 			const btn = h("button", { type: "button", class: "bf-lock" + (on ? " on" : ""), disabled: part === "item" && itemForced,
@@ -421,7 +421,7 @@ function renderRegions(model) {
 					if (Object.keys(x).length) conf.regionLock[r.key] = x; else delete conf.regionLock[r.key];
 					saveConf(); renderRegions(lastModel);
 				} }, on ? "固定中" : "固定");
-			return h("td", { class: "bf-lockcell" + (on ? " bf-locked" : "") }, h("span", { class: "bf-lockval" }, text[part]), btn);
+			return h("td", { class: "bf-lockcell" + (on ? " bf-locked" : "") }, btn, h("span", { class: "bf-lockval" }, text[part]));
 		})));
 	}
 }
@@ -501,6 +501,11 @@ async function runSearch() {
 	if (running) return;
 	const { conds, skillLv } = buildConds();
 	if (!conds.length) { progressBox.textContent = "目標を1つ以上入れてください。"; return; }
+	const over = conds.filter((c) => BF_METRIC_BY_KEY[c.key]?.max != null && c.target > BF_METRIC_BY_KEY[c.key].max);
+	if (over.length) {
+		progressBox.textContent = over.map((c) => `${c.label}の耐性は${BF_METRIC_BY_KEY[c.key].max}%が上限のため、${c.target}%にはできません。`).join(" ");
+		return;
+	}
 	running = true; stopFlag = false;
 	searchBtn.disabled = true; stopBtn.disabled = false;
 	resultBox.replaceChildren();
@@ -559,8 +564,8 @@ function renderResults() {
 		h("option", { value: "changes", selected: conf.sort === "changes" }, "変更箇所が少ない順"),
 		h("option", { value: "price", selected: conf.sort === "price" }, "値段が安い順"));
 	const list = results.slice().sort(conf.sort === "price"
-		? (a, b) => (a.price - b.price) || (a.changes - b.changes)
-		: (a, b) => (a.changes - b.changes) || (a.price - b.price));
+		? (a, b) => ((a.priceUnknown > 0) - (b.priceUnknown > 0)) || (a.price - b.price) || (a.changes - b.changes)
+		: (a, b) => (a.changes - b.changes) || ((a.priceUnknown > 0) - (b.priceUnknown > 0)) || (a.price - b.price));
 	resultBox.replaceChildren(
 		h("div", { class: "bf-res-head" }, h("h3", {}, "結果"), "並べ替え: ", sortSel),
 		h("div", { class: "bf-res-list" }, list.map((r, i) => resultRow(r, i))));

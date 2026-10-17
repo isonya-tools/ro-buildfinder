@@ -97,7 +97,7 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT .bf-regions th { background: var(--bf-panel2); font-weight: normal; color: var(--bf-dim); }
 #BF_ROOT .bf-modes { display: flex; gap: 0; }
 #BF_ROOT .bf-lockcell { white-space: normal; }
-#BF_ROOT .bf-lockval { display: inline-block; vertical-align: middle; margin-right: 8px; white-space: normal; }
+#BF_ROOT .bf-lockval { display: inline-block; vertical-align: middle; margin-left: 8px; white-space: normal; }
 #BF_ROOT .bf-lock { padding: 1px 8px; border: 1px solid var(--bf-line); background: var(--bf-input); color: var(--bf-dim); font-size: 12px; vertical-align: middle; }
 #BF_ROOT .bf-lock.on { background: var(--bf-accent); color: #1a1205; border-color: var(--bf-accent); font-weight: bold; }
 #BF_ROOT .bf-lock:disabled { opacity: .7; cursor: default; }

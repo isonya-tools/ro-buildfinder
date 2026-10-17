@@ -45,7 +45,7 @@ const HARD_CAT = (key) => {
 	return "stat";
 };
 
-let hard = null, hardProbe = null;
+let hard = null, hardProbe = null, hardSkill = null;
 export async function loadHard() {
 	if (hard) return hard;
 	try {
@@ -53,7 +53,10 @@ export async function loadHard() {
 		hard = res.ok ? await res.json() : {};
 	} catch { hard = {}; }
 	const probe = hard.probe || {};
-	delete hard.probe;
+	const bySkill = hard.castBySkill || {};
+	delete hard.probe; delete hard.castBySkill;
+	hardSkill = {};
+	for (const k of Object.keys(bySkill)) hardSkill[k] = { items: new Set(bySkill[k].items), cards: new Set(bySkill[k].cards) };
 	for (const k of Object.keys(hard)) hard[k] = { items: new Set(hard[k].items), cards: new Set(hard[k].cards) };
 	hardProbe = {};
 	for (const k of Object.keys(probe)) hardProbe[k] = { items: new Set(probe[k].items), cards: new Set(probe[k].cards) };
@@ -82,11 +85,13 @@ export function makeRelevance(keys) {
 	const spSet = new Set();
 	const cats = new Set();
 	const probeKeys = new Set(); // 実際に装備して変わった指標で判定するもの
+	const skillIds = new Set(); // スキルごとの処理で装備を見ているもの（castBySkill）
 	const targetCards = new Set();
 	let refresh = false;
 	for (const key of keys) {
 		const cat = HARD_CAT(key);
-		if (cat === "cast" && key.startsWith("sk:")) cats.add(cat);
+		// スキルの固定詠唱・CT: スキルごとの処理で装備を見ているもの（固定詠唱は、固定詠唱全般で実際に変わるものも）
+		if (key.startsWith("sk:")) { skillIds.add(key.split(":")[1]); skillIds.add("any"); if (key.endsWith(":cf")) probeKeys.add("castFixed"); }
 		else if (key.startsWith("elm:")) probeKeys.add("bodyElm");
 		else if (cat) probeKeys.add(key);
 		if (key === "refresh") refresh = true;
@@ -103,6 +108,7 @@ export function makeRelevance(keys) {
 	const inHard = (kind, id) => {
 		for (const c of cats) if (hard?.[c]?.[kind]?.has(id)) return true;
 		for (const k of probeKeys) if (hardProbe?.[k]?.[kind]?.has(id)) return true;
+		for (const k of skillIds) if (hardSkill?.[k]?.[kind]?.has(id)) return true;
 		return false;
 	};
 	const memo = new Map();
@@ -118,7 +124,9 @@ export function makeRelevance(keys) {
 	};
 	/** セット効果の行（w_SE[n][0]。正: アイテムの行、負: カードの行）が関係するか */
 	const setRow = (src) => src > 0 ? item(src) : card(-src);
-	return { item, card, setRow, targetCards };
+	/** 目標に関係するSPコードか（精錬値の条件を見るときに使う） */
+	const code = (c) => spSet.has(c % 100000);
+	return { item, card, setRow, targetCards, code };
 }
 
 /** 関係しそうなセット（全メンバーがアイテムのもの）: [{setIndex, members:[itemId...], src}] */

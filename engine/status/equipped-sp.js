@@ -72,6 +72,26 @@ import {
 } from "../runtime/roro-state.js";
 import { ITEM_SP_TIME_OBJ } from "../equip/timeitem.dat.js";
 
+/*
+ * BuildFinder: 1回の計算の中で同じＳＰを何度も集計し直すのが計算時間の大半なので、
+ * calcCoreFromModel の間だけ結果を覚えておく（装備・カード・精錬値などは計算中に変わらない前提。
+ * 画面の通常の計算では使わない）。
+ */
+let spMemoOn = false;
+const spMemoMap = new Map();
+export function SetEquippedSPMemo(on) {
+	spMemoOn = !!on;
+	spMemoMap.clear();
+}
+function spMemo(key, fn) {
+	let v = spMemoMap.get(key);
+	if (v === undefined) {
+		v = fn();
+		spMemoMap.set(key, v);
+	}
+	return Array.isArray(v) ? v.slice() : v;
+}
+
 /**
  * 装備中のＳＰの合計値を取得する（装備のみ）.
  * @param spid ＳＰのＩＤ
@@ -146,6 +166,11 @@ export function GetEquippedSPValueArrayEquip(spid) {
  * @return 当該ＳＰのパラメタ合計値
  */
 export function GetEquippedSPSubEquip(spid, invalidItemIdArray, bListUp, bExact) {
+	if (!spMemoOn) return GetEquippedSPSubEquipImpl(spid, invalidItemIdArray, bListUp, bExact);
+	return spMemo("E" + spid + "|" + (invalidItemIdArray ? invalidItemIdArray.join(",") : "") + "|" + (bListUp ? 1 : 0) + (bExact ? 1 : 0),
+		() => GetEquippedSPSubEquipImpl(spid, invalidItemIdArray, bListUp, bExact));
+}
+function GetEquippedSPSubEquipImpl(spid, invalidItemIdArray, bListUp, bExact) {
 
 	var eqpRegionId = 0;
 	var spDefIdx = 0;
@@ -656,6 +681,11 @@ export function GetEquippedSPValueArrayCardAndElse(spid) {
  * @return 当該ＳＰのパラメタ合計値
  */
 export function GetEquippedSPSubSPCardAndElse(spid, invalidCardIdArray, bListUp) {
+	if (!spMemoOn) return GetEquippedSPSubSPCardAndElseImpl(spid, invalidCardIdArray, bListUp);
+	return spMemo("C" + spid + "|" + (invalidCardIdArray ? invalidCardIdArray.join(",") : "") + "|" + (bListUp ? 1 : 0),
+		() => GetEquippedSPSubSPCardAndElseImpl(spid, invalidCardIdArray, bListUp));
+}
+function GetEquippedSPSubSPCardAndElseImpl(spid, invalidCardIdArray, bListUp) {
 	var i = 0;
 	var idx = 0;
 	var j = 0;

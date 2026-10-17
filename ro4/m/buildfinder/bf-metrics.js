@@ -66,6 +66,9 @@ add("resPlayer", "プレイヤー", "その他の耐性", "%", (r) => r.specData
 RACE.forEach((n, i) => add("resRace" + i, n, "モンスター耐性", "%", (r) => r.specData[SP.ITEM_SP_RESIST_RACE_SOLID + i]));
 SIZE.forEach((n, i) => add("resSize" + i, n, "モンスター耐性", "%", (r) => r.specData[SP.ITEM_SP_RESIST_SIZE_SMALL + i]));
 
+// 属性・種族・サイズ・ボス/一般・遠距離・プレイヤーの耐性は、計算上95%が上限（Lv200解放アップデート）
+for (const m of BF_METRICS) if (/^res(Elm|Boss|NotBoss|Long|Player|Race|Size)/.test(m.key)) m.max = 95;
+
 export const BF_METRIC_BY_KEY = Object.fromEntries(BF_METRICS.map((m) => [m.key, m]));
 
 /** 計算結果（calcCoreFromModel / calcFromModel の戻り値）から全指標を読む */
