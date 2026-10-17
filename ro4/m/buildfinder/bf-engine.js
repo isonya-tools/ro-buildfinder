@@ -278,7 +278,8 @@ export function cardCandidatesOf(region) {
 	const out = [];
 	for (const c of CardObjNew) {
 		if (!c) continue;
-		if (region.cardKinds.includes(c[CIDX_KIND])) out.push(c[CIDX_ID]);
+		// CARD_KIND_ANY（ナドヨなど）はどの部位にも挿せる
+		if (region.cardKinds.includes(c[CIDX_KIND]) || c[CIDX_KIND] === CK.CARD_KIND_ANY) out.push(c[CIDX_ID]);
 	}
 	return out;
 }
