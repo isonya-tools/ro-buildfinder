@@ -642,8 +642,6 @@ export async function search(opt) {
 	};
 	const verify = (picks) => {
 		const f = { picks, changes: changesOf({ picks }), cost: costOf({ picks }) };
-		// 今の上位に入らないものは確かめない
-		if (results.length >= maxResults && order(f, results[results.length - 1]) >= 0) return;
 		const m = cloneModel(base);
 		for (const v of picks) {
 			if (!v.changed) continue;
@@ -688,15 +686,11 @@ export async function search(opt) {
 			await tick();
 			onProgress(results.length ? `組み合わせを探しています（${results.length}件）` : "組み合わせを探しています", Math.min(0.95, (budget + 0.5) / (n + 1)));
 		}
-		if (levelLeaves >= levelLimit || foundCount >= totalLimit) return;
+		// 表示件数だけ見つかったら、その場で探すのをやめる
+		if (results.length >= maxResults || levelLeaves >= levelLimit || foundCount >= totalLimit) return;
 		const left = budget - changes;
 		if (left < 0) return;
 		for (let k = 0; k < keys.length; k++) if (sum[k] + upper(i, k, left) < need[k] - 1e-9) return;
-		// 表示件数がそろっていて、今の一番下より高くなるなら打ち切り
-		if (results.length >= maxResults) {
-			const w = results[results.length - 1];
-			if (w.changes < budget || (w.changes === budget && cost >= w.cost)) return;
-		}
 		if (i === n) {
 			if (changes !== budget) return;
 			// 盾を固定しているのに両手武器を選んだ構成は除く
@@ -722,7 +716,7 @@ export async function search(opt) {
 			await dfs(i + 1, sum.map((x, k) => x + v.d[k]), th, changes + v.changed, cost + v.price);
 			pick.pop();
 			if (v.pkgHead) for (const j of v.pkg.regions) if (j > i) req[j] = null;
-			if (levelLeaves >= levelLimit || foundCount >= totalLimit) return;
+			if (results.length >= maxResults || levelLeaves >= levelLimit || foundCount >= totalLimit) return;
 		}
 	};
 	for (budget = 0; budget <= n; budget++) {

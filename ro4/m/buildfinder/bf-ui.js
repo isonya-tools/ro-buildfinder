@@ -9,6 +9,7 @@ import {
 } from "./bf-engine.js";
 import { BF_METRICS, BF_GROUPS, BF_METRIC_BY_KEY, ELM_NAMES } from "./bf-metrics.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
+import { CardObjNew } from "../../../engine/equip/card.dat.js";
 import { loadPrices, priceOfFactory } from "./bf-price.js";
 import { applyModelToScreen } from "./bf-apply.js";
 import { ITEM_SP_TIME_OBJ } from "../../../engine/equip/timeitem.dat.js";
@@ -16,6 +17,7 @@ import { TIME_ITEM_DATA_INDEX_NAME, TIME_ITEM_DATA_INDEX_EXPLAIN } from "../../.
 import { g_timeItemDataBridge } from "../../../engine/equip/CTimeItemDataBridge.js";
 
 const COOKIE = "bf_conf";
+const MAX_RESULT_CHOICES = [10, 30, 100];
 const h = (tag, attrs = {}, ...kids) => {
 	const e = document.createElement(tag);
 	for (const [k, v] of Object.entries(attrs)) {
@@ -55,7 +57,8 @@ const defaultConf = () => ({
 	cardGoalRemoved: [],
 	regionLock: {},   // regionKey -> {item, refine, card, ench}（true のものだけ固定。ほかは自由）
 	ngItems: [], ngCards: [],
-	maxResults: 30, sort: "changes",
+	maxResults: 10, sort: "changes",
+	maxResultsV: 2,   // 表示件数を 10/30/100 の選択式にした版
 });
 let conf = defaultConf();
 function loadConf() {
@@ -75,6 +78,8 @@ function loadConf() {
 		delete conf.regionMode;
 		if (!conf.buffOn || typeof conf.buffOn !== "object") conf.buffOn = {};
 		if (conf.targets.castVary != null) delete conf.targets.castVary;
+		// 表示件数は 10/30/100 から選ぶ（自由入力だった頃の値は既定の10に戻す）
+		if (c.maxResultsV !== 2 || !MAX_RESULT_CHOICES.includes(conf.maxResults)) { conf.maxResults = 10; conf.maxResultsV = 2; }
 	} catch { /* 壊れていたら既定値 */ }
 }
 function saveConf() {
@@ -94,6 +99,50 @@ function itemNames() {
 const cardNames = () => cardNameList || (cardNameList = allCardNames());
 const enchNames = () => enchNameList || (enchNameList = allEnchantNames());
 let cardGoalNameList = null;
+
+// ---- ひらがな・カタカナ・読みでも引けるプルダウン検索（エンチャントDBと同じ寄せ方） ----
+const SMALL = { "ァ": "ア", "ィ": "イ", "ゥ": "ウ", "ェ": "エ", "ォ": "オ", "ッ": "ツ", "ャ": "ヤ", "ュ": "ユ", "ョ": "ヨ", "ヮ": "ワ", "ヵ": "カ", "ヶ": "ケ" };
+const toKata = (t) => t.replace(/[ぁ-ゖ]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0x60));
+/** 読みの比較用（カタカナにして濁点・小さい字をそろえる）。カナ以外が混ざる文字列は空 */
+function yfold(t) {
+	t = toKata(String(t ?? "").normalize("NFKC")).normalize("NFD").replace(/[\u3099\u309a]/g, "").normalize("NFC").replace(/[ァィゥェォッャュョヮヵヶ]/g, (c) => SMALL[c]);
+	return /^[ァ-ヺー\s]+$/.test(t) ? t.replace(/\s+/g, "") : "";
+}
+const searchNorm = (s) => toKata(String(s ?? "").normalize("NFKC").toLowerCase().replace(/\s+/g, ""));
+let yomi = null; // エンチャント名 → 読み（エンチャントDBの data.json の ey から作った bf-yomi.json）
+const yomiKey = (s) => String(s).normalize("NFKC").replace(/[<>＜＞\s]/g, "").toLowerCase();
+const yomiBase = (s) => yomiKey(s).replace(/[+＋]?\d+%?$/, "");
+async function loadYomi() {
+	yomi = new Map();
+	try {
+		const res = await fetch(new URL("./bf-yomi.json", import.meta.url));
+		const j = res.ok ? await res.json() : null;
+		for (const [k, v] of Object.entries(j?.ey || {})) {
+			yomi.set(yomiKey(k), v);
+			if (!yomi.has("~" + yomiBase(k))) yomi.set("~" + yomiBase(k), v);
+		}
+	} catch { /* 読みなしで名前だけ */ }
+}
+/** カード・エンチャントの読み（カードはらとりおの読み、エンチャントは bf-yomi.json） */
+function readingOf(cid) {
+	const c = CardObjNew[cid];
+	if (!c) return "";
+	if (c[3]) return yfold(c[3]);
+	const nm = c[2] || "";
+	return yfold(yomi?.get(yomiKey(nm)) || yomi?.get("~" + yomiBase(nm)) || "");
+}
+/** TomSelect の候補と検索方法（名前の部分一致、ひらがな・カタカナ同一視、読みの部分一致） */
+function kanaSelectOptions(list) {
+	return {
+		options: list.map(([id, name]) => ({ value: String(id), text: name, n: searchNorm(name), y: readingOf(id) })),
+		searchField: ["text"],
+		score: (q) => {
+			const n = searchNorm(q), y = yfold(q);
+			if (!n) return () => 1;
+			return (o) => o.n.includes(n) ? 2 : y && o.y.includes(y) ? 1 : 0;
+		},
+	};
+}
 const cardGoalNames = () => cardGoalNameList || (cardGoalNameList = cardNames().filter(([id]) => !isEnchant(id)));
 
 // ---- スキルの説明（公式ツールの内容） ----
@@ -138,7 +187,7 @@ export async function initBuildFinder(container) {
 	setBuffOn(conf.buffOn);
 	// 謝辞・ライセンスはページの一番下に置く
 	document.body.append(h("div", { id: "BF_FOOT" }, licenseNote()));
-	[prices] = await Promise.all([loadPrices(), loadSkillInfo(), loadOfficial()]);
+	[prices] = await Promise.all([loadPrices(), loadSkillInfo(), loadOfficial(), loadYomi()]);
 	refreshAll();
 	let timer = 0;
 	document.addEventListener("change", (e) => {
@@ -285,7 +334,7 @@ function goalRow(kind, row, i, counts) {
 	queueMicrotask(() => {
 		if (!window.TomSelect) return;
 		const ts = new window.TomSelect(sel, {
-			options: g.names().map(([id, name]) => ({ value: String(id), text: name })),
+			...kanaSelectOptions(g.names()),
 			maxOptions: 200, placeholder: cid ? "" : g.place, allowEmptyOption: true,
 			onChange: (v) => {
 				const id = Number(v) || 0;
@@ -476,7 +525,8 @@ function chip(label, onRemove) {
 
 // ---- 検索 ----
 function buildSearch() {
-	const maxIn = numInput(conf.maxResults, (v) => { conf.maxResults = Math.max(1, Math.min(200, Math.floor(v || 30))); saveConf(); });
+	const maxIn = h("select", { class: "bf-maxres", onchange: () => { conf.maxResults = Number(maxIn.value); saveConf(); } },
+		MAX_RESULT_CHOICES.map((n) => h("option", { value: n, selected: n === conf.maxResults }, String(n))));
 	searchBtn = h("button", { type: "button", class: "bf-go", onclick: runSearch }, "検索");
 	stopBtn = h("button", { type: "button", class: "bf-stop", disabled: true, onclick: () => { stopFlag = true; } }, "止める");
 	progressBox = h("div", { class: "bf-progress" });
