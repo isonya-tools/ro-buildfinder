@@ -167,9 +167,9 @@ function potIdOf(name) {
 	if (!potentialId) potentialId = new Map(allEnchantNames().map(([id, n]) => [n, id]));
 	return potentialId.get(name) || 0;
 }
-/** スキルの固定詠唱・CTに関係する潜在系エンチャント [{id, name, desc, partners: [id]}] */
-function potentialsOf(skillName) {
-	const list = potential?.sk?.[String(skillName).replace(/\s+/g, "")] || [];
+/** スキルの固定詠唱(kind="f")・CT(kind="c")に関係する潜在系エンチャント [{id, name, desc, partners: [id]}] */
+function potentialsOf(skillName, kind) {
+	const list = potential?.sk?.[String(skillName).replace(/\s+/g, "")]?.[kind] || [];
 	return list.map((name) => {
 		const e = potential.en[name] || {};
 		return { id: potIdOf(name), name, desc: e.d || "", partners: (e.s || []).map(potIdOf).filter((x) => x > 0), partnerNames: e.s || [] };
@@ -485,9 +485,8 @@ async function renderSkillsInner(model) {
 		h("thead", {}, h("tr", {},
 			h("th", {}),
 			h("th", { class: "bf-sk-name" }, "スキル"),
-			h("th", {}, "固定詠唱"), h("th", {}, "装備での短縮"),
-			h("th", {}, "CT"), h("th", {}, "装備での短縮"),
-			h("th", { class: "bf-sk-pot" }, "潜在解放"))));
+			h("th", {}, "固定詠唱"), h("th", {}, "装備での短縮"), h("th", { class: "bf-sk-pot" }, "潜在解放"),
+			h("th", {}, "CT"), h("th", {}, "装備での短縮"), h("th", { class: "bf-sk-pot" }, "潜在解放"))));
 	const tbody = h("tbody");
 	table.append(tbody);
 	skillBox.replaceChildren(table, adder || "");
@@ -500,31 +499,35 @@ async function renderSkillsInner(model) {
 			nameEl.addEventListener("mousemove", (e) => showTip(e, skillTipContent(name, info)));
 			nameEl.addEventListener("mouseleave", hideTip);
 		}
-		const pots = potentialsOf(name);
-		const potCell = h("td", { class: "bf-sk-pot" });
-		for (const p of pots) {
-			const label = p.name.replace(/^潜在(解放|覚醒)\((.*)\)$/, "$2");
-			const btn = h("button", { type: "button", class: "bf-pot" + (on.has(p.id) ? " on" : ""), onclick: () => {
-				hideTip();
-				if (on.has(p.id)) conf.potentialOn = conf.potentialOn.filter((x) => x !== p.id);
-				else conf.potentialOn.push(p.id);
-				saveConf(); renderSkills(lastModel);
-			} }, label);
-			btn.addEventListener("mousemove", (e) => showTip(e, potentialTip(p)));
-			btn.addEventListener("mouseleave", hideTip);
-			potCell.append(btn);
-		}
-		if (!pots.length) potCell.append("-");
+		const potCell = (kind) => {
+			const td = h("td", { class: "bf-sk-pot" });
+			const pots = potentialsOf(name, kind);
+			for (const p of pots) {
+				const label = p.name.replace(/^潜在(解放|覚醒)\((.*)\)$/, "$2");
+				const btn = h("button", { type: "button", class: "bf-pot" + (on.has(p.id) ? " on" : ""), onclick: () => {
+					hideTip();
+					if (on.has(p.id)) conf.potentialOn = conf.potentialOn.filter((x) => x !== p.id);
+					else conf.potentialOn.push(p.id);
+					saveConf(); renderSkills(lastModel);
+				} }, label);
+				btn.addEventListener("mousemove", (e) => showTip(e, potentialTip(p)));
+				btn.addEventListener("mouseleave", hideTip);
+				td.append(btn);
+			}
+			if (!pots.length) td.append("-");
+			return [td, pots];
+		};
+		const [potF, potsF] = potCell("f"), [potC, potsC] = potCell("c");
 		const del = h("button", { type: "button", class: "bf-clear", title: "一覧から消す", onclick: () => {
 			if (!conf.skillHidden.includes(id)) conf.skillHidden.push(id);
 			saveConf(); renderSkills(lastModel);
 		} }, "✕");
-		const mine = pots.filter((p) => on.has(p.id)).map((p) => p.id);
+		const mine = [...new Set([...potsF, ...potsC].filter((p) => on.has(p.id)).map((p) => p.id))];
 		const c = { cf: h("td", { class: "bf-cur" }, "…"), cfr: h("td", { class: "bf-cur" }, "…"), ct: h("td", { class: "bf-cur" }, "…"), ctr: h("td", { class: "bf-cur" }, "…") };
 		tbody.append(h("tr", { class: mine.length ? "bf-sk-on" : "" },
 			h("td", { class: "bf-sk-del" }, del),
 			h("td", { class: "bf-sk-name" }, nameEl),
-			c.cf, c.cfr, c.ct, c.ctr, potCell));
+			c.cf, c.cfr, potF, c.ct, c.ctr, potC));
 		cells.push([id, maxLv, c, mine]);
 	}
 	// 計算は1スキルずつ（画面が固まらないように間をあける）
