@@ -73,7 +73,7 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT .bf-skills { max-height: 460px; overflow: auto; }
 #BF_ROOT .bf-skilltable td:first-child { padding-right: 18px; }
 #BF_ROOT .bf-skilltable { border-collapse: collapse; width: auto; }
-#BF_ROOT .bf-skilladd { margin-top: 6px; max-width: 420px; }
+#BF_ROOT .bf-skilladd { margin-top: 6px; width: 360px; }
 #BF_ROOT .bf-timeitems { margin-bottom: 8px; display: flex; align-items: center; gap: 6px; }
 #BF_ROOT .bf-modes.bf-inline { display: inline-flex; }
 #BF_ROOT .bf-skilltable thead th { position: sticky; top: 0; background: var(--bf-panel2); z-index: 1; font-weight: normal; color: var(--bf-dim); font-size: 12px; padding: 3px 6px; }
