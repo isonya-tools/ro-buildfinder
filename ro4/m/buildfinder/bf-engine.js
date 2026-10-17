@@ -296,7 +296,7 @@ export async function search(opt) {
 			}
 		}
 		onProgress(`${r.label}：確認しました`, done / totalWork);
-		regionVariants.push(paretoPrune(variants, need).slice(0, 300));
+		regionVariants.push(paretoPrune(variants, need, true).slice(0, 300));
 	}
 
 	// ---- 組み合わせ探索（深さ優先＋上限による枝刈り） ----
@@ -397,7 +397,7 @@ function expandSlots(region, itemId, d0, slotChoices, priceOf, need, price0) {
 export class BfStopped extends Error {}
 
 /** 条件に関係する指標だけで比べ、他より全面的に劣る組を捨てる（値段・個数も比べる） */
-function paretoPrune(list, need) {
+function paretoPrune(list, need, keepTies = false) {
 	const idx = need.map((n, i) => i).filter((i) => need[i] > 0);
 	const cap = (v, i) => Math.min(v.d[i], need[i]);
 	const sorted = list.slice().sort((a, b) => (a.price - b.price) || ((a.count ?? a.cards?.length ?? 0) - (b.count ?? b.cards?.length ?? 0)));
@@ -416,7 +416,7 @@ function paretoPrune(list, need) {
 			if (dominated) for (const h of v.hits) if (!k.hits.has(h)) { dominated = false; break; }
 			if (dominated && k.hits.size > v.hits.size) strict = true;
 			// 全く同じ条件のものは別の候補として残す（並べて比べられるように）
-			if (dominated && strict) continue outer;
+			if (dominated && (strict || !keepTies)) continue outer;
 		}
 		kept.push(v);
 	}
