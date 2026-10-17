@@ -385,7 +385,8 @@ function skillTipContent(name, info) {
 }
 
 // ---- 部位ごとの設定（既定は自由。固定ボタンを押したものだけ固定） ----
-const LOCK_PARTS = [["item", "装備"], ["refine", "精錬値"], ["card", "カード"], ["ench", "エンチャント"]];
+const LOCK_PARTS = [["refine", "精錬値"], ["item", "装備"], ["card", "カード"], ["ench", "エンチャント"]];
+const ALL_LOCK = { item: true, refine: true, card: true, ench: true };
 function renderRegions(model) {
 	regionBox.replaceChildren(h("tr", {}, h("th", {}, "部位"), LOCK_PARTS.map(([, label]) => h("th", {}, label))));
 	for (const r of BF_REGIONS) {
@@ -403,7 +404,13 @@ function renderRegions(model) {
 		};
 		// カードかエンチャントを固定したら、それが付いている装備も固定になる
 		const itemForced = !!(lk.card || lk.ench);
-		regionBox.append(h("tr", {}, h("td", {}, r.label), LOCK_PARTS.map(([part]) => {
+		// 部位の固定 = 装備・精錬値・カード・エンチャントを全部固定
+		const allOn = LOCK_PARTS.every(([p]) => p === "refine" && !r.refine ? true : lk[p]);
+		const regionBtn = h("button", { type: "button", class: "bf-lock" + (allOn ? " on" : ""), onclick: () => {
+			if (allOn) delete conf.regionLock[r.key]; else conf.regionLock[r.key] = { ...ALL_LOCK };
+			saveConf(); renderRegions(lastModel);
+		} }, allOn ? "固定中" : "固定");
+		regionBox.append(h("tr", {}, h("td", { class: "bf-lockcell" + (allOn ? " bf-locked" : "") }, h("span", { class: "bf-lockval" }, r.label), regionBtn), LOCK_PARTS.map(([part]) => {
 			if (part === "refine" && !r.refine) return h("td", { class: "bf-dim" }, "—");
 			const on = !!lk[part] || (part === "item" && itemForced);
 			const btn = h("button", { type: "button", class: "bf-lock" + (on ? " on" : ""), disabled: part === "item" && itemForced,
