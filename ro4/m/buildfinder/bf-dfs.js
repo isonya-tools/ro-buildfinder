@@ -10,6 +10,7 @@
 import { solveFill } from "./bf-fill.js";
 
 const ordCache = new WeakMap();
+const TRAIL_MAX = 40;
 
 /**
  * prefix（部位 0.. の候補の番号）から先を探す.
@@ -23,7 +24,7 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 	// 試す順（変えない物→安い順）は部位ごとに先に決めておく
 	let ordAll = ordCache.get(LV);
 	if (!ordAll) ordCache.set(LV, ordAll = LV.map((lv) => lv.map((_, vi) => vi).sort((a, b) => (lv[a].changed ? lv[a].price : -1) - (lv[b].changed ? lv[b].price : -1) || a - b)));
-	const out = { leaves: [], prefixes: [], nodes: 0, found: false, aborted: false };
+	const out = { leaves: [], prefixes: [], nodes: 0, found: false, aborted: false, trail: [] };
 	const req = new Array(n).fill(null);
 	const idx = [], pick = [];
 	// 状態は深さごとの配列に持つ（進むときは次の深さに書き込み、戻るときは深さを戻すだけ）
@@ -48,6 +49,8 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 	const rec = (i) => {
 		if (out.aborted || (feas && out.found)) return;
 		if ((++out.nodes & 255) === 0 && expired()) { out.aborted = true; return; }
+		// 画面に流す「今見ている組み合わせ」の見本（Worker ごとの表示用。多すぎないよう数ノードに1回、1仕事で最大 TRAIL_MAX 件）
+		if (ctx.trail && (out.nodes & 31) === 0 && out.trail.length < TRAIL_MAX) out.trail.push(idx.slice());
 		const left = budget - changes;
 		if (left < 0) return;
 		for (let l = 0; l < nL; l++) { const pre = topL[l][i]; if (lsum[l] + pre[left < pre.length ? left : pre.length - 1] < lneed[l] - 1e-9) return; }
@@ -122,7 +125,7 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 export function dfsTask(ctx, prefix, ms) {
 	const r = dfsRun(ctx, prefix, null, ms ? performance.now() + ms : null);
 	if (!r.aborted) return r;
-	return { nodes: r.nodes, aborted: true, sub: dfsRun(ctx, prefix, prefix.length + 1, null).prefixes, leaves: [], found: false };
+	return { nodes: r.nodes, trail: r.trail, aborted: true, sub: dfsRun(ctx, prefix, prefix.length + 1, null).prefixes, leaves: [], found: false };
 }
 
 // ---- Worker へ渡すための詰め替え ----

@@ -722,7 +722,11 @@ export async function search(opt) {
 	let done = 0;
 	// 今何を調べているかの生データ（画面の暇つぶし用）。文章を作る手間を避けるため、60ms に1回だけ作る
 	let lastAct = 0;
-	const act = (fn) => { const t = Date.now(); if (t - lastAct < 60) return; lastAct = t; onActivity(fn()); };
+	// 今していること・考えていることの文章（画面の最上段の枠に流す。節目ごとに必ず出す）
+	const t00 = performance.now();
+	const clock = () => { const sec = Math.floor((performance.now() - t00) / 1000); return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`; };
+	const say = (text) => onActivity(`[${clock()}] ${text}`, -2);
+	const act = (fn) => { const t = Date.now(); if (t - lastAct < 30) return; lastAct = t; onActivity(fn(), -1); };
 
 	// ---- カード・エンチャのセット（複数のカードを同時に付けて初めて効く効果）----
 	// 1枚ずつの効き目の足し算には出ないので、セットごとに「そろったときの上乗せ分」を実計算で求めておき、
@@ -1105,6 +1109,7 @@ export async function search(opt) {
 		pkgCount++;
 	}
 
+	say(`候補がそろいました: ${regionVariants.map((l, i) => `${regions[i]?.label ?? i} ${l.length}件`).join(" / ")}（セット ${pkgCount}件、カードの組み合わせ効果 ${cardSets.length}件）`);
 	// ---- 組み合わせ探索 ----
 	// 装備（と精錬値）を部位ごとに選び、カード・エンチャ枠は最後に足りない分だけ解く（モンハンのシミュレーターの装飾品の当てはめと同じ）。
 	// 変える部位の数が少ない順（0か所→1か所→…）に探し、その数の中では深さ優先＋上限による枝刈り。
@@ -1207,7 +1212,7 @@ export async function search(opt) {
 			if (!coreKeys.every((c) => core[c.key] - c.target >= -1e-9)) return;
 		}
 		const val = await evalM(m);
-		if (!meets(val)) return;
+		if (!meets(val)) { say(`実計算で確認 ×: ${conds.filter((c) => val[c.key] - c.target < -1e-9).map((c) => `${c.label || c.key} ${(val[c.key] - c.target).toFixed(1)}`).join("、")} が足りませんでした（足し算の見込みと実際のずれ）`); return; }
 		if (results.some((x) => within(x.toks, toks))) return;
 		for (let i = results.length - 1; i >= 0; i--) if (within(toks, results[i].toks)) results.splice(i, 1);
 		const changed = picks.filter((v) => v.changed).map((v) => ({ ...v }));
@@ -1219,6 +1224,7 @@ export async function search(opt) {
 			price += pp.price;
 			unknown += pp.unknown;
 		}
+		say(`実計算で確認 ○: 条件を満たす構成が見つかりました（変更${f.changes}か所）`);
 		results.push({ toks, picks: changed, values: val, price, priceUnknown: unknown, changes: f.changes, cost: f.cost, used: usedOf(m), model: m });
 		results.sort(order);
 		if (results.length > maxResults) results.length = maxResults;
@@ -1248,14 +1254,14 @@ export async function search(opt) {
 	// 探索は小さな仕事（途中まで決めた組から先を探す）に分けて、Worker の束に配る（Worker が使えないときはこの画面のスレッドで順に）。
 	// 仕事が時間内に終わらなければ、結果を捨てて1部位ぶん細かく分け直す
 	const TASK_MS = 300;
-	const tasksCtx = () => ({ n, K, need, W, scaleOf, LV, LU: levelLU, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom, failMemo, budget, feas: feasMode, nL, topL, lneed });
+	const tasksCtx = () => ({ trail: true, n, K, need, W, scaleOf, LV, LU: levelLU, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom, failMemo, budget, feas: feasMode, nL, topL, lneed });
 	let levelLU = [];
 	const searchLevel = async () => {
 		const ctx = tasksCtx();
 		const workers = usePool && pool.available();
 		if (workers) {
 			if (poolBase !== LV) { pool.broadcast("dfsBase", packBase({ n, K, need, W, scaleOf, LV, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom })); poolBase = LV; }
-			pool.broadcast("dfsLevel", { LU: levelLU, budget, feas: feasMode, nL, topL, lneed });
+			pool.broadcast("dfsLevel", { trail: true, LU: levelLU, budget, feas: feasMode, nL, topL, lneed });
 		}
 		// 仕事の置き場（後ろから取り出す。細かく分けた組は逆順に積んで、元の順に取り出す）
 		const taskQ = [{ prefix: [], w: 1 }];
@@ -1269,7 +1275,13 @@ export async function search(opt) {
 			return dfsTask(ctx, t.prefix, t.prefix.length >= n ? 0 : TASK_MS);
 		};
 		const capN = workers ? pool.poolSize() * 2 : 1;
-		let active = 0, failed = null;
+		let active = 0, failed = null, created = 1, finishedTasks = 0, aborts = 0;
+		const lvT0 = performance.now(), nodes0 = nodes;
+		say(`変更${budget}か所の探索を開始（${workers ? `${pool.poolSize()}スレッドで並列` : "この画面のスレッドのみ"}）`);
+		const hb = setInterval(() => {
+			const sec = (performance.now() - lvT0) / 1000;
+			onActivity(`[${clock()}] 変更${budget}か所 ｜ 探索済み 約${(Math.min(1, doneW) * 100).toFixed(1)}% ｜ 仕事 ${finishedTasks}/${created}（分け直し ${aborts}回、待ち ${taskQ.length}） ｜ ${(nodes - nodes0).toLocaleString()}手（毎秒 ${Math.round((nodes - nodes0) / Math.max(sec, 0.1)).toLocaleString()}） ｜ 確認待ち ${queue.length}件 ｜ 結果 ${results.length}件`, -3);
+		}, 500);
 		await new Promise((resolve) => {
 			const pump = () => {
 				if (failed) { if (!active) resolve(); return; }
@@ -1278,8 +1290,10 @@ export async function search(opt) {
 					const t = taskQ.pop();
 					active++;
 					exec(t).then(async (r) => {
-						nodes += r.nodes;
+						nodes += r.nodes; finishedTasks++;
+						showTrail(r);
 						if (r.aborted) {
+							aborts++; created += r.sub.length;
 							for (let q = r.sub.length - 1; q >= 0; q--) taskQ.push({ prefix: r.sub[q], w: t.w / r.sub.length });
 							if (!r.sub.length) doneW += t.w;
 						} else {
@@ -1296,9 +1310,22 @@ export async function search(opt) {
 			};
 			pump();
 		});
+		clearInterval(hb);
 		if (failed) throw failed;
 	};
 	let poolBase = null;
+	// 仕事で見た組み合わせの見本を、Worker（スレッド）ごとの枠に流す。変えた部位の装備だけを並べる
+	const showTrail = (r) => {
+		if (!r.trail) return;
+		for (const idx of r.trail) {
+			const parts = [];
+			for (let j = 0; j < idx.length; j++) {
+				const v = LV[j][idx[j]];
+				if (v.changed) parts.push(`${v.region.label} ${itemName(v.itemId)}${v.refine ? "+" + v.refine : ""}${v.cards.length ? "(" + v.cards.map(([, c]) => cardName(c)).join("・") + ")" : ""}${v.groups.length ? " 枠" + v.groups.length : ""}`);
+			}
+			onActivity(`${idx.length}/${n} ${parts.length > 3 ? "… / " : ""}${parts.slice(-3).join(" / ") || "(変更なし)"}`, r.lane ?? 0);
+		}
+	};
 	const buildPicks = (idx, sol) => {
 		const picks = idx.map((vi, j) => LV[j][vi]);
 		const groups = [], owner = [];
@@ -1327,7 +1354,8 @@ export async function search(opt) {
 		if (prevLam) starts.push(prevLam);
 		const opt = optimizeLambda(LV, need, scaleOf, b, starts);
 		lastF = opt.length ? opt[0].val : null;
-		if (opt.length && opt[0].val < -1e-6 * (1 + Math.abs(opt[0].val))) return false;
+		if (opt.length && opt[0].val < -1e-6 * (1 + Math.abs(opt[0].val))) { say(`${b}か所の変更では、どう選んでも届かないと上限の計算で証明できました（余裕 ${opt[0].val.toExponential(2)}）。次へ進みます`); return false; }
+		say(`${b}か所の変更で届くかを調べます（上限の計算ではまだ届く可能性あり. 余裕 ${lastF == null ? "-" : lastF.toExponential(2)}）`);
 		for (const o of opt.slice(0, 3)) lams.push(o.lam);
 		if (opt.length) prevLam = opt[0].lam;
 		nL = lams.length;
@@ -1344,6 +1372,7 @@ export async function search(opt) {
 		return [...keep, ...list.filter((v) => v.pkg)];
 	});
 	prepLists(feasLists);
+	say(`まず、値段や中身の違いを無視して、何か所変えれば届くかを調べます（候補 ${feasLists.map((l) => l.length).join("/")}件）`);
 	feasMode = true;
 	let firstBudget = n + 1;
 	for (budget = 0; budget <= n; budget++) {
@@ -1352,6 +1381,7 @@ export async function search(opt) {
 		if (!okLevel) continue;
 		feasFound = false;
 		await searchLevel();
+		say(feasFound ? `${budget}か所で、足し算の見込み上は届く構成が見つかりました。ここから値段順に詰めます` : `${budget}か所では、枠まで含めて全部調べましたが届く構成はありませんでした`);
 		if (feasFound) { firstBudget = budget; break; }
 	}
 	feasMode = false;
@@ -1359,12 +1389,14 @@ export async function search(opt) {
 	emit(true);
 	// 2) 届く最小の変更か所数から、全部の候補で、値段・カードの少なさの順に良いものを探す
 	prepLists(regionVariants);
+	say(`次に、全部の候補（${regionVariants.map((l) => l.length).join("/")}件）で、変更${firstBudget}か所から値段・カードの少なさの順に探します`);
 	for (budget = firstBudget; budget <= n; budget++) {
 		const lt0 = performance.now(), ln0 = nodes;
 		const okLevel = setupLevel(budget);
 		if (!okLevel) continue;
 		await searchLevel();
 		await flush();
+		say(`${budget}か所の探索を終えました（実計算で確認した構成 ${foundCount}件、結果 ${results.length}件）`);
 		if (finished()) break;
 	}
 	emit(true);

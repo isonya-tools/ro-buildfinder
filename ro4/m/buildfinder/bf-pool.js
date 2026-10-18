@@ -12,15 +12,16 @@ export function poolSize() {
 	return Math.max(2, Math.min(32, n));
 }
 
-function makeWorker() {
+function makeWorker(idx) {
 	const w = new Worker(new URL("./bf-worker.js", import.meta.url), { type: "module" });
-	w.busy = 0;
+	w.busy = 0; w.idx = idx;
 	w.onmessage = ({ data }) => {
 		const p = pending.get(data.id);
 		if (!p) return;
 		pending.delete(data.id);
 		w.busy--;
-		if (data.err) p.reject(new Error(data.err)); else p.resolve(data.v ?? data.t);
+		if (data.err) p.reject(new Error(data.err));
+		else { const v = data.v ?? data.t; if (v && typeof v === "object") v.lane = w.idx; p.resolve(v); }
 	};
 	w.onerror = (e) => { e.preventDefault?.(); fail(); };
 	return w;
@@ -29,7 +30,7 @@ function start() {
 	if (workers || failed) return;
 	try {
 		workers = [];
-		for (let i = 0; i < poolSize(); i++) workers.push(makeWorker());
+		for (let i = 0; i < poolSize(); i++) workers.push(makeWorker(i));
 	} catch { fail(); }
 }
 function fail() {
@@ -81,7 +82,7 @@ export function cancelAll() {
 	pending.clear();
 	for (const w of busy) {
 		w.terminate();
-		workers[workers.indexOf(w)] = makeWorker();
+		{ const i = workers.indexOf(w); workers[i] = makeWorker(i); }
 	}
 }
 export class CancelError extends Error {}

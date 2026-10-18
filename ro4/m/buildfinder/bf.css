@@ -53,7 +53,7 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT .bf-clear { border: none; background: none; color: var(--bf-dim); padding: 0 4px; font-size: 12px; line-height: 1; }
 #BF_ROOT .bf-clear:hover { color: var(--bf-ng); }
 
-/* 今の状態と目標 */
+/* 目標設定 */
 #BF_ROOT .bf-metrics { display: flex; flex-wrap: nowrap; gap: 10px 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 4px; }
 #BF_ROOT .bf-enchrows { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 10px 12px; align-items: flex-start; }
 #BF_ROOT .bf-buffgroup td { text-align: left; }
@@ -203,5 +203,11 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT .bf-lock + .bf-lock { margin-left: 4px; }
 
 /* 検索中の生データ表示 */
-#BF_ROOT .bf-live { margin: 6px 0 0; padding: 6px 8px; max-width: 520px; height: 9.5em; overflow: hidden; font: 12px/1.15 ui-monospace, Menlo, Consolas, monospace; color: var(--bf-dim); background: var(--bf-input); border: 1px solid var(--bf-line); white-space: pre; text-overflow: ellipsis; }
+#BF_ROOT .bf-live { margin: 8px 0 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(420px, 1fr)); gap: 6px; }
+#BF_ROOT .bf-lane-wrap { min-width: 0; background: var(--bf-input); border: 1px solid var(--bf-line); }
+#BF_ROOT .bf-lane-wide { grid-column: 1 / -1; }
+#BF_ROOT .bf-lane.bf-lane-status { height: 1.4em; color: inherit; }
+#BF_ROOT .bf-lane.bf-lane-say { height: 29em; color: inherit; }
+#BF_ROOT .bf-lane-title { padding: 2px 8px; font-size: 11px; color: var(--bf-dim); border-bottom: 1px solid var(--bf-line); }
+#BF_ROOT .bf-lane { margin: 0; padding: 4px 8px; height: 17em; overflow: hidden; font: 12px/1.2 ui-monospace, Menlo, Consolas, monospace; color: var(--bf-dim); white-space: pre; text-overflow: ellipsis; }
 #BF_ROOT .bf-live[hidden] { display: none; }

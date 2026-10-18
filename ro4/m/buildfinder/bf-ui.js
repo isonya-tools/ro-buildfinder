@@ -1,6 +1,6 @@
 /**
  * RO BuildFinder 画面.
- * 今の状態と目標（エンチャントを含む）、スキル、固定装備、除外装備、検索と結果一覧を受け持つ。
+ * 目標設定（エンチャントを含む）、スキル、固定装備、除外装備、検索と結果一覧を受け持つ。
  * シミュ専用の設定はクッキー（bf_conf）に保存する（URL出力には入れない）。
  */
 import {
@@ -283,7 +283,7 @@ export async function initBuildFinder(container) {
 	loadConf();
 	root = container;
 	root.append(
-		section("今の状態と目標", h("div", {}, stateBox = h("div", { class: "bf-state" }), h("div", { class: "bf-enchrows" }, enchBox = h("div", {}), cardBox = h("div", {}), timeBox = h("div", {})))),
+		section("目標設定", h("div", {}, stateBox = h("div", { class: "bf-state" }), h("div", { class: "bf-enchrows" }, enchBox = h("div", {}), cardBox = h("div", {}), timeBox = h("div", {})))),
 		section("スキル", skillBox = h("div", { class: "bf-skills" })),
 		section("固定装備", regionBox = h("table", { class: "bf-regions" })),
 		h("details", { class: "bf-sec bf-acc" }, h("summary", {}, h("h3", {}, "除外装備")), buildNg()),
@@ -402,7 +402,7 @@ function renderBuffs(model) {
 	timeBox.replaceChildren(h("div", { class: "bf-mgroup bf-buffgroup" }, h("div", { class: "bf-mgroup-title" }, "発動バフ"), h("table", {}, rows)));
 }
 
-// ---- 今の状態と目標 ----
+// ---- 目標設定 ----
 function metricGroupsTable(val, opts = {}) {
 	const { withTarget = false, before = null } = opts;
 	const grid = h("div", { class: "bf-metrics" });
@@ -751,7 +751,7 @@ function buildSearch() {
 	searchBtn = h("button", { type: "button", class: "bf-go", onclick: runSearch }, "検索");
 	stopBtn = h("button", { type: "button", class: "bf-stop", disabled: true, onclick: stopSearch }, "止める");
 	progressBox = h("div", { class: "bf-progress" });
-	liveBox = h("pre", { class: "bf-live", hidden: true });
+	liveBox = h("div", { class: "bf-live", hidden: true });
 	progressBar = h("div", { class: "bf-bar", hidden: true }, h("div", { class: "bf-bar-fill" }), h("span", { class: "bf-bar-pct" }));
 	return h("div", {},
 		h("div", { class: "bf-opts" }, h("label", {}, "表示件数: ", maxIn)),
@@ -810,7 +810,7 @@ async function runSearch() {
 	resultBox.replaceChildren();
 	lastResults = null; openSigs.clear();
 	barMax = 0; progressBar.hidden = false; setBar(0);
-	liveLines.length = 0; liveBox.hidden = false;
+	clearLive(); liveBox.hidden = false;
 	const t0 = performance.now();
 	try {
 		const res = await search({
@@ -820,7 +820,7 @@ async function runSearch() {
 			maxResults: conf.maxResults,
 			priceOf: priceOfFactory(prices),
 			onProgress: (text, ratio) => { if (!token.stop) { progressBox.textContent = text; setBar(ratio); } },
-			onActivity: (line) => { if (!token.stop) pushLive(line); },
+			onActivity: (line, lane) => { if (!token.stop) pushLive(line, lane); },
 			// 見つかったものから順に結果に出す
 			onResults: (results, ctx) => { if (!token.stop) { lastResults = { results, ...ctx, conds }; renderResults(); } },
 			shouldStop: () => token.stop,
@@ -843,7 +843,7 @@ function endSearch() {
 	running = false; searchBtn.disabled = false; stopBtn.disabled = true;
 	for (const b of regionBox.querySelectorAll("button.bf-lock")) b.disabled = false;
 	progressBar.hidden = true;
-	liveBox.hidden = true; liveLines.length = 0;
+	liveBox.hidden = true; clearLive();
 	curToken = null;
 	thawScreen();
 }
@@ -854,14 +854,41 @@ function stopSearch() {
 	progressBox.textContent = "";
 	endSearch();
 }
-/** 検索中に今何を調べているかの生データ（暇つぶし用。直近の行だけ、描画は 100ms に1回） */
-const liveLines = [];
+/**
+ * 検索中に今何を調べているかの生データ（暇つぶし用）。調べている物（lane=-1）と、計算スレッド（Worker）ごとの枠に分けて流す。
+ * 行は枠ごとに直近 LIVE_LINES 行だけ持ち、描画は 100ms に1回、行が変わった枠だけ（全部の行を毎回描くと重いので）
+ */
+const LIVE_LINES = 14;
+const lanes = new Map(); // lane → { box, lines, dirty }
 let liveBox, liveTimer = 0;
-function pushLive(line) {
-	liveLines.push(line);
-	if (liveLines.length > 8) liveLines.shift();
+function laneOf(id) {
+	let l = lanes.get(id);
+	if (!l) {
+		const box = h("pre", { class: "bf-lane" + (id === -3 ? " bf-lane-status" : id === -2 ? " bf-lane-say" : "") });
+		const title = h("div", { class: "bf-lane-title" }, id === -3 ? "いまの状況" : id === -2 ? "考えていること" : id === -1 ? "候補を調べています" : `スレッド ${id + 1}`);
+		const wrap = h("div", { class: "bf-lane-wrap" + (id < 0 ? " bf-lane-wide" : "") }, title, box);
+		lanes.set(id, l = { box, wrap, lines: [], dirty: false });
+		// 枠は番号順に並べる
+		const order = [...lanes.keys()].sort((a, b) => a - b);
+		liveBox.replaceChildren(...order.map((k) => lanes.get(k).wrap));
+	}
+	return l;
+}
+function pushLive(line, lane = -1) {
+	const l = laneOf(lane);
+	l.lines.push(line);
+	if (l.lines.length > (lane === -3 ? 1 : lane === -2 ? 24 : LIVE_LINES)) l.lines.shift();
+	l.dirty = true;
 	if (liveTimer) return;
-	liveTimer = setTimeout(() => { liveTimer = 0; liveBox.textContent = liveLines.join("\n"); }, 100);
+	liveTimer = setTimeout(() => {
+		liveTimer = 0;
+		for (const x of lanes.values()) if (x.dirty) { x.dirty = false; x.box.textContent = x.lines.join("\n"); }
+	}, 100);
+}
+function clearLive() {
+	clearTimeout(liveTimer); liveTimer = 0;
+	lanes.clear();
+	liveBox?.replaceChildren();
 }
 /** 進捗バー（戻らないように最大値で表示） */
 let barMax = 0;
