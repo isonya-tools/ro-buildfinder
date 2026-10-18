@@ -5,6 +5,7 @@
 import { extractSaveModelFromState, buildSaveDataUnits } from "../../../engine/savedata/savedata-collect.js";
 import { CSaveController } from "../../../engine/savedata/CSaveController.js";
 import { get as registryGet } from "../../../engine/runtime/engine-registry.js";
+import { deferStAllCalc } from "../../../engine/bridge/stallcalc-bridge.js";
 
 // BF_REGIONS の key → セーブデータの装備欄の並び（右手, 左手, 頭上, 頭中, 頭下, 盾, 鎧, 肩, 靴, アクセ1, アクセ2）
 const SAVE_INDEX = { weapon: 0, headTop: 2, headMid: 3, headUnder: 4, shield: 5, body: 6, shoulder: 7, shoes: 8, acc1: 9, acc2: 10 };
@@ -44,5 +45,8 @@ export function applyModelToScreen(model, regions) {
 	const units = buildSaveDataUnits(sm);
 	let text = "", bit = 0;
 	for (const u of units) [text, bit] = u.encodeToURL(text, bit);
-	CSaveController.loadFromURL(text);
+	// 読み込みの途中で装備・カードの変更のたびに全計算が走って数秒かかるので、止めておいて最後に1回だけ計算する
+	if (globalThis.__bfNoDefer) { CSaveController.loadFromURL(text); return; }
+	deferStAllCalc(true);
+	try { CSaveController.loadFromURL(text); } finally { deferStAllCalc(false); }
 }

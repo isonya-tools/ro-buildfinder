@@ -6,7 +6,7 @@
 import {
 	BF_REGIONS, regionItem, getRefine, getTrans, refineLabel, search, evalModel, skillTimes, nakedModel, modelFromScreen, attackSkillsOf,
 	itemName, cardName, itemSlotCount, loadOfficial, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped, setBuffOn,
-	fixedLock, withoutRegion, cancelPending,
+	fixedLock, withoutRegion, cancelPending, goalEquivalent,
 } from "./bf-engine.js";
 import { BF_METRICS, BF_GROUPS, BF_METRIC_BY_KEY, ELM_NAMES } from "./bf-metrics.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
@@ -58,6 +58,7 @@ const defaultConf = () => ({
 	enchRemoved: [],  // 一覧から外したエンチャント（今付いていても自動では入れ直さない）
 	cardGoalRows: null, // [[カードID, 目標の枚数 or null]]（エンチャントと同じ仕組み）
 	cardGoalRemoved: [],
+	searchRefine: {}, // 固定装備で、精錬値も変えて探す部位（部位キー → true）
 	keepEmpty: {},    // 固定装備で、空き枠（カード・エンチャント）も空のまま固定する部位（部位キー → true）
 	ngItems: [], ngCards: [],
 	maxResults: 10, sort: "changes",
@@ -345,22 +346,37 @@ function refreshAll() {
 // ---- 上の計算欄（最大HP・最大SPなど）を止めておく ----
 // シミュの計算もらとりおの計算本体を使うので、そのたびに上の欄が書き換わってちらつく。
 // 計算中は欄の写しを見せて本物は隠し、終わったら画面の入力で計算し直して本物を戻す。
-let freezeDepth = 0, frozen = null;
+let freezeDepth = 0, frozen = [];
+// 計算のたびに書き換わる欄（最大HP等・ステータスの＋の数字・性能の欄・モンスター欄）を含む、外側の表
+const FREEZE_ANCHORS = ["OBJID_SPAN_CHARA_MAXHP", "OBJID_SPAN_STATUS_BONUS_STR", "OBJID_SPAN_STATUS_P_ATK", "OBJID_SPAN_MONSTER_HP"];
 function freezeScreen() {
 	if (freezeDepth++ > 0) return;
-	const t = document.getElementById("OBJID_SPAN_CHARA_MAXHP")?.closest("table")?.parentElement?.closest("table");
-	if (!t) return;
-	const copy = t.cloneNode(true);
-	for (const e of copy.querySelectorAll("[id]")) e.removeAttribute("id");
-	t.before(copy);
-	t.style.display = "none";
-	frozen = { t, copy };
+	const tables = new Set();
+	for (const id of FREEZE_ANCHORS) {
+		const t = document.getElementById(id)?.closest("table")?.parentElement?.closest("table");
+		if (t) tables.add(t);
+	}
+	// 別の表の中に入っている表は外側だけ止める
+	for (const t of [...tables]) if ([...tables].some((o) => o !== t && o.contains(t))) tables.delete(t);
+	for (const t of tables) {
+		const copy = t.cloneNode(true);
+		for (const e of copy.querySelectorAll("[id]")) e.removeAttribute("id");
+		// 同じ name のラジオボタンが写しにあると本物の選択が外れるので name も外す。入力欄の値は写す
+		for (const e of copy.querySelectorAll("[name]")) e.removeAttribute("name");
+		const src = t.querySelectorAll("input, select, textarea"), dst = copy.querySelectorAll("input, select, textarea");
+		src.forEach((e, i) => { const d = dst[i]; if (!d) return; if (e.type === "checkbox" || e.type === "radio") d.checked = e.checked; else d.value = e.value; });
+		for (const e of dst) e.disabled = true;
+		t.before(copy);
+		t.style.display = "none";
+		frozen.push({ t, copy });
+	}
 }
 function thawScreen() {
 	if (--freezeDepth > 0) return;
 	freezeDepth = 0;
 	try { registryGet("calcCoreFromModel")(registryGet("extractModelFromDom")()); } catch { /* 画面の準備前 */ }
-	if (frozen) { frozen.copy.remove(); frozen.t.style.display = ""; frozen = null; }
+	for (const f of frozen) { f.copy.remove(); f.t.style.display = ""; }
+	frozen = [];
 }
 
 // ---- 発動バフ（らとりおの「クイック調整」と同じ中身。個別にオンオフ、既定はオフ） ----
@@ -667,8 +683,15 @@ function renderRegions(model) {
 			if (keep) delete conf.keepEmpty[r.key];
 			saveConf(); renderRegions(model);
 		} }, keep ? "空き枠: 空のまま" : "空き枠: 探す");
+		// 精錬値を固定するか、変えて探すか（精錬できない部位には出さない）。既定は固定
+		const srch = !!conf.searchRefine?.[r.key];
+		const refBtn = empty || !r.refine ? null : h("button", { type: "button", class: "bf-lock" + (srch ? " on" : ""), disabled: running, title: "固定した装備の精錬値を、そのままにする／変えて探す", onclick: () => {
+			conf.searchRefine = { ...conf.searchRefine, [r.key]: !srch };
+			if (srch) delete conf.searchRefine[r.key];
+			saveConf(); renderRegions(model);
+		} }, srch ? "精錬: 探す" : "精錬: 固定");
 		regionBox.append(h("tr", {},
-			h("td", { class: "bf-lockcell" }, btn, keepBtn, h("span", { class: "bf-lockval" }, r.label)),
+			h("td", { class: "bf-lockcell" }, btn, keepBtn, refBtn, h("span", { class: "bf-lockval" }, r.label)),
 			FIXED_COLS.map(([part]) => h("td", { class: text[part] === "-" ? "bf-dim" : "" }, text[part]))));
 	}
 }
@@ -728,11 +751,12 @@ function buildSearch() {
 	searchBtn = h("button", { type: "button", class: "bf-go", onclick: runSearch }, "検索");
 	stopBtn = h("button", { type: "button", class: "bf-stop", disabled: true, onclick: stopSearch }, "止める");
 	progressBox = h("div", { class: "bf-progress" });
+	liveBox = h("pre", { class: "bf-live", hidden: true });
 	progressBar = h("div", { class: "bf-bar", hidden: true }, h("div", { class: "bf-bar-fill" }), h("span", { class: "bf-bar-pct" }));
 	return h("div", {},
 		h("div", { class: "bf-opts" }, h("label", {}, "表示件数: ", maxIn)),
 		h("div", { class: "bf-actions" }, searchBtn, stopBtn),
-		progressBar, progressBox);
+		progressBar, progressBox, liveBox);
 }
 
 function buildConds() {
@@ -743,11 +767,25 @@ function buildConds() {
 		if (m.kind === "elm") conds.push({ key: "elm:" + t, target: 1, label: `${m.label}が${ELM_NAMES[t]}`, unit: "", elm: true });
 		else conds.push({ key, target: t, label: m.label, unit: m.unit });
 	}
-	for (const [cid, n] of conf.enchRows || []) {
-		if (cid > 0 && n != null && n > 0) conds.push({ key: "card:" + cid, target: n, label: cardName(cid), unit: "個" });
-	}
-	for (const [cid, n] of conf.cardGoalRows || []) {
-		if (cid > 0 && n != null && n > 0) conds.push({ key: "card:" + cid, target: n, label: cardName(cid), unit: "枚" });
+	// エンチャント・カードの目標は、同じ意味の指標があればそれに置き換える
+	// （毒属性付与(鎧)もアルギオペも「鎧の属性が毒」、石化耐性50%を2つ＋石化耐性100も「石化耐性100%」と同じ扱い）
+	let model0 = null;
+	try { model0 = modelFromScreen(); } catch { /* 画面の準備前 */ }
+	const sums = new Map();
+	const addGoal = (cid, n, unit) => {
+		const eq = model0 && goalEquivalent(model0, cid);
+		if (!eq) { conds.push({ key: "card:" + cid, target: n, label: cardName(cid), unit }); return; }
+		const cur = sums.get(eq.key) || { eq, target: 0 };
+		cur.target = eq.elm ? 1 : cur.target + eq.perUnit * n;
+		sums.set(eq.key, cur);
+	};
+	for (const [cid, n] of conf.enchRows || []) if (cid > 0 && n != null && n > 0) addGoal(cid, n, "個");
+	for (const [cid, n] of conf.cardGoalRows || []) if (cid > 0 && n != null && n > 0) addGoal(cid, n, "枚");
+	for (const { eq, target } of sums.values()) {
+		const same = conds.find((c) => c.key === eq.key);
+		if (same) { same.target = Math.max(same.target, target); continue; }
+		const mt = BF_METRIC_BY_KEY[eq.key];
+		conds.push(eq.elm ? { key: eq.key, target: 1, label: eq.label, unit: "", elm: true } : { key: eq.key, target, label: mt?.label || eq.label, unit: mt?.unit || "" });
 	}
 	// スキル欄でオンにした潜在解放は、それ自体とセット相手（豪傑など）を1個以上の目標にする
 	for (const cid of potentialWithPartners(conf.potentialOn || [])) {
@@ -772,15 +810,17 @@ async function runSearch() {
 	resultBox.replaceChildren();
 	lastResults = null; openSigs.clear();
 	barMax = 0; progressBar.hidden = false; setBar(0);
+	liveLines.length = 0; liveBox.hidden = false;
 	const t0 = performance.now();
 	try {
 		const res = await search({
 			conds, skillLv,
-			lock: fixedLock(modelFromScreen(), conf.keepEmpty),
+			lock: fixedLock(modelFromScreen(), conf.keepEmpty, conf.searchRefine),
 			ngItems: conf.ngItems, ngCards: conf.ngCards,
 			maxResults: conf.maxResults,
 			priceOf: priceOfFactory(prices),
 			onProgress: (text, ratio) => { if (!token.stop) { progressBox.textContent = text; setBar(ratio); } },
+			onActivity: (line) => { if (!token.stop) pushLive(line); },
 			// 見つかったものから順に結果に出す
 			onResults: (results, ctx) => { if (!token.stop) { lastResults = { results, ...ctx, conds }; renderResults(); } },
 			shouldStop: () => token.stop,
@@ -803,6 +843,7 @@ function endSearch() {
 	running = false; searchBtn.disabled = false; stopBtn.disabled = true;
 	for (const b of regionBox.querySelectorAll("button.bf-lock")) b.disabled = false;
 	progressBar.hidden = true;
+	liveBox.hidden = true; liveLines.length = 0;
 	curToken = null;
 	thawScreen();
 }
@@ -812,6 +853,15 @@ function stopSearch() {
 	cancelPending();
 	progressBox.textContent = "";
 	endSearch();
+}
+/** 検索中に今何を調べているかの生データ（暇つぶし用。直近の行だけ、描画は 100ms に1回） */
+const liveLines = [];
+let liveBox, liveTimer = 0;
+function pushLive(line) {
+	liveLines.push(line);
+	if (liveLines.length > 8) liveLines.shift();
+	if (liveTimer) return;
+	liveTimer = setTimeout(() => { liveTimer = 0; liveBox.textContent = liveLines.join("\n"); }, 100);
 }
 /** 進捗バー（戻らないように最大値で表示） */
 let barMax = 0;
@@ -828,12 +878,13 @@ function newThings(r) {
 	const out = [];
 	for (const pk of r.picks) {
 		if (!pk.keep) out.push({ kind: "item", id: pk.itemId, label: itemName(pk.itemId) + (pk.pkg ? "（セット）" : "") });
+		if (pk.keep && pk.setRefine != null) out.push({ kind: "refine", id: pk.itemId, label: `${itemName(pk.itemId)} を${pk.setTrans ? "★" + pk.setTrans + " " : ""}+${pk.setRefine}に` });
 		for (const [, cid] of pk.cards) out.push({ kind: "card", id: cid, label: cardName(cid) });
 	}
 	return out;
 }
 const openSigs = new Set(); // 開いている結果（作り直しても開いたままにする）
-const sigOf = (r) => JSON.stringify([r.model.equip, r.model.card]);
+const sigOf = (r) => JSON.stringify([r.model.equip, r.model.card, r.model.defPlus, r.model.weapon?.atkPlus, r.model.defTranscendence, r.model.weapon?.transcendence]);
 function renderResults() {
 	if (!lastResults) return;
 	const { results } = lastResults;
@@ -842,7 +893,7 @@ function renderResults() {
 		h("option", { value: "price", selected: conf.sort === "price" }, "値段が安い順"));
 	const list = results.slice().sort(conf.sort === "price"
 		? (a, b) => ((a.priceUnknown > 0) - (b.priceUnknown > 0)) || (a.price - b.price) || (a.changes - b.changes)
-		: (a, b) => (a.changes - b.changes) || ((a.priceUnknown > 0) - (b.priceUnknown > 0)) || (a.price - b.price));
+		: (a, b) => (a.changes - b.changes) || ((a.used ?? 0) - (b.used ?? 0)) || ((a.priceUnknown > 0) - (b.priceUnknown > 0)) || (a.price - b.price));
 	resultBox.replaceChildren(
 		h("div", { class: "bf-res-head" }, h("h3", {}, "結果"), "並べ替え: ", sortSel),
 		h("div", { class: "bf-res-list" }, list.map((r, i) => resultRow(r, i))));

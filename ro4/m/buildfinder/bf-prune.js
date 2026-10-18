@@ -78,6 +78,7 @@ export function paretoPrune(list, need) {
 		if (w) return w;
 		w = (v.cards || []).map((c) => "c" + c[1]);
 		if (v.selfRel !== false && v.itemId) w.push("i" + v.itemId);
+		if (v.setRefine != null) w.push("r");
 		w.sort();
 		whatMemo.set(v, w);
 		return w;
