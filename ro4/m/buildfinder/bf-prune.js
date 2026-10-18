@@ -62,7 +62,9 @@ export function within(a, b) {
 }
 
 /** 条件に関係する指標だけで比べ、他より全面的に劣る組を捨てる（値段・個数も比べる） */
-export function paretoPrune(list, need) {
+export function paretoPrune(list, need, o = {}) {
+	// free: 値段・個数・中身の違いは見ず、性能で負けているものを全部捨てる（届くかどうかだけを調べるとき用）
+	const free = !!o.free;
 	// 比べるのは件数の2乗の手間なので、多すぎるときは先に目標への効き目の上位に絞る（値段では切らない）
 	// 「そのまま（変えない）」は効き目0でも必ず残す（無いと、その部位を変えない組み合わせが作れない）
 	if (list.length > PRUNE_INPUT_MAX) list = [...new Set([...list.filter((v) => !v.changed), ...topByProgress(list, need, PRUNE_INPUT_MAX)])];
@@ -84,15 +86,37 @@ export function paretoPrune(list, need) {
 		return w;
 	};
 
-	const sorted = list.slice().sort((a, b) => (a.price - b.price) || ((a.count ?? a.cards?.length ?? 0) - (b.count ?? b.cards?.length ?? 0)));
+	// 枠（あとから埋めるカード・エンチャ枠）は、dominated にするほうが同じ枠を全部持っているときだけ比べる
+	const gmemo = new Map();
+	const gcnt = (v) => {
+		let m = gmemo.get(v);
+		if (!m) { m = new Map(); for (const g of v.groups || []) m.set(g.def.id, (m.get(g.def.id) || 0) + 1); gmemo.set(v, m); }
+		return m;
+	};
+	const covers = (k, v) => {
+		if (k.mustFill && !v.mustFill) return false;
+		const mv = gcnt(v);
+		if (!mv.size) return true;
+		const mk = gcnt(k);
+		for (const [id, c] of mv) if ((mk.get(id) || 0) < c) return false;
+		return true;
+	};
+
+	const prog = (v) => { let x = 0; const c = caps.get(v); for (let j = 0; j < c.length; j++) x += c[j] / (need[idx[j]] || 1); return x; };
+	const sorted = free
+		? list.slice().sort((a, b) => (prog(b) - prog(a)) || (a.price - b.price))
+		: list.slice().sort((a, b) => (a.price - b.price) || ((a.count ?? a.cards?.length ?? 0) - (b.count ?? b.cards?.length ?? 0)));
 	const kept = [];
 	outer: for (const v of sorted) {
 		for (const k of kept) {
-			if (k.price > v.price) continue;
-			const kc = k.count ?? k.cards.length, vc = v.count ?? v.cards.length;
-			if (kc > vc) continue;
+			if (!free) {
+				if (k.price > v.price) continue;
+				const kc = k.count ?? k.cards?.length ?? 0, vc = v.count ?? v.cards?.length ?? 0;
+				if (kc > vc) continue;
+			}
 			if ((k.changed ?? 0) > (v.changed ?? 0)) continue;
 			if (k.twoHand && !v.twoHand) continue;
+			if (!covers(k, v)) continue;
 			let dominated = true, better = false;
 			const ck = caps.get(k), cv = caps.get(v);
 			for (let j = 0; j < ck.length; j++) {
@@ -101,7 +125,7 @@ export function paretoPrune(list, need) {
 			}
 			// 性能で負けているものは捨てる。性能が同じなら、中身が違うもの（同じ耐性に届く別のカードなど）は
 			// 値段が高くても別の候補として残し、中身が同じもの・余計な物を足しただけのものは捨てる
-			if (dominated && (better || within(what(k), what(v)))) continue outer;
+			if (dominated && (free || better || within(what(k), what(v)))) continue outer;
 		}
 		kept.push(v);
 	}

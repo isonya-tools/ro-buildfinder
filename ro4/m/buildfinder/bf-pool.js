@@ -66,6 +66,13 @@ export function run(type, model) {
 	});
 }
 
+/** 全部の Worker に同じ内容を送る（返事は無い）。探索の下準備用 */
+export function broadcast(type, model) {
+	start();
+	if (!workers) return;
+	for (const w of workers) w.postMessage({ id: 0, type, model, st });
+}
+
 /** 待っている計算を全部取り消す（止めるボタン）。計算中の Worker は作り直す */
 export function cancelAll() {
 	if (!workers) return;

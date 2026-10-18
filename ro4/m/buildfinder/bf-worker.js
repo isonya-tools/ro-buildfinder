@@ -3,7 +3,11 @@
  * ラトリオの計算本体（calcCoreFromModel / calcFromModel）を読み込み、送られてきたモデルを計算して指標を返す。
  *   {id, type: "core", model, st}  → {id, v: 指標}（st: 画面側の計算に合わせる内部状態）
  *   {id, type: "skill", model}     → {id, t: {cf, ct}}（スキルの固定詠唱・CT、ミリ秒）
+ *   {type: "dfsBase" | "dfsLevel", model}（返事なし）→ 組み合わせ探索の下準備（部位ごとの候補・上限の準備）を覚える
+ *   {id, type: "dfs", model: {prefix, ms}} → {id, v}（途中まで決めた組から先を探した結果. bf-dfs.js）
  */
+
+import { dfsRun } from "./bf-dfs.js";
 
 // ラトリオの一部のモジュールは読み込み時に画面（document）を触るので、何でも受け付ける空の画面を用意しておく
 const NULLS = new Set(["firstChild", "lastChild", "firstElementChild", "lastElementChild", "nextSibling", "previousSibling", "nextElementSibling", "previousElementSibling", "parentNode", "parentElement", "offsetParent"]);
@@ -42,6 +46,7 @@ for (const fn of ["getElementById", "querySelector", "getElementsByName", "getEl
 	document[fn] = fn.startsWith("getElementsBy") || fn === "querySelectorAll" ? () => [] : () => null;
 }
 
+let dbase = null, dlevel = null;
 let core = null, full = null, readMetrics = null, setters = {}, err = null, warm = false;
 const ready = (async () => {
 	try {
@@ -74,6 +79,17 @@ const ready = (async () => {
 })();
 
 onmessage = async ({ data }) => {
+	// 探索の仕事（計算本体は使わない）
+	if (data.type === "dfsBase") { dbase = { ...data.model, failMemo: new Map() }; return; }
+	if (data.type === "dfsLevel") { dlevel = data.model; return; }
+	if (data.type === "dfs") {
+		try {
+			const { prefix, ms } = data.model;
+			const r = dfsRun({ ...dbase, ...dlevel }, prefix, null, ms ? performance.now() + ms : null);
+			postMessage({ id: data.id, v: r });
+		} catch (e) { postMessage({ id: data.id, err: String(e) }); }
+		return;
+	}
 	await ready;
 	const { id, type, model, st } = data;
 	if (err) { postMessage({ id, err }); return; }
@@ -82,13 +98,6 @@ onmessage = async ({ data }) => {
 		if (!warm) { full(model); core(model); warm = true; }
 		// 支援欄の開閉（開いている欄の設定だけ計算に入る）などは毎回画面側に合わせる（戦闘計算で書き換わる遠距離かどうかも戻す）
 		for (const [k, v] of Object.entries(st || {})) setters[k]?.(v);
-		if (type === "expand") {
-			// カード・エンチャ枠の組み合わせの絞り込み（計算本体は使わない）
-			const { expandSlots } = await import("./bf-prune.js");
-			const j = model;
-			postMessage({ id, v: expandSlots(j.slots, j.d0, j.choices, j.need, j.price0) });
-			return;
-		}
 		if (type === "skill") {
 			const r = full(model)?.activeResultArray?.[0];
 			postMessage({ id, t: { cf: Math.round((r?.castFixed || 0) * 1000), ct: Math.round((r?.coolTime || 0) * 1000) } });
