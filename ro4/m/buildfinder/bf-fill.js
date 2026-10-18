@@ -53,6 +53,38 @@ export function finishDef(def, need, W, cardSets = []) {
  *                    ax: ASPD を本来の式で確かめるときの準備 { iA, iP, iF, a, p, f（枠より前までの値）, T（目標） }
  * @returns {Array<{pick: number[], used: number, price: number}>}
  */
+/**
+ * 枠の候補を「効果がまったく同じもの」でまとめる（カデスとイーブルなど）.
+ * 探すときは代表（一番安いもの）だけを試し、見つかった選び方に同じ効果の別の候補を差し替えたものも結果に加える。
+ * 届くかどうかは同じなので、届かない組を調べ尽くす手数が候補の重複の分だけ減る。セットの上乗せを運ぶ候補はまとめない
+ */
+const liveCache = new WeakMap();
+function liveOpts(def) {
+	let lv = liveCache.get(def);
+	if (lv) return lv;
+	const opts = def.opts;
+	const reps = [0], alts = new Map(), byKey = new Map();
+	for (let i = 1; i < opts.length; i++) {
+		const o = opts[i];
+		if (o.sets?.length) { reps.push(i); continue; }
+		const key = Array.from(o.d, (x) => Math.round(x * 1e6)).join(",");
+		const r = byKey.get(key);
+		if (r == null) { byKey.set(key, i); reps.push(i); continue; }
+		// 値段の安い方を代表にする（opts は安い順だが念のため）
+		if ((o.price ?? Infinity) < (opts[r].price ?? Infinity)) {
+			const list = alts.get(r) || [];
+			alts.delete(r);
+			alts.set(i, [r, ...list]);
+			byKey.set(key, i);
+			reps[reps.indexOf(r)] = i;
+		} else alts.set(r, [...(alts.get(r) || []), i]);
+	}
+	reps.sort((x, y) => x - y);
+	lv = { reps, alts };
+	liveCache.set(def, lv);
+	return lv;
+}
+
 export function solveFill(groups, D, need, o = {}) {
 	const { want = 3, musts = [], cap = 3e6, stop = null, cardSets = [], stats = null, ax = null } = o;
 	const K = D.length, G = groups.length;
@@ -172,6 +204,17 @@ export function solveFill(groups, D, need, o = {}) {
 	let nodes = 0;
 	let out = [];
 	let maxUsed = 0;
+	// 同じ枠の定義が続く所は並び順を問わないので、並べ替えて比べる
+	const sigOf = (pk) => {
+		const parts = [];
+		for (let h = 0; h < G;) {
+			let e = h + 1;
+			while (e < G && groups[e].def === groups[h].def) e++;
+			parts.push(Array.from(pk.slice(h, e)).sort((x, y) => x - y).join("."));
+			h = e;
+		}
+		return parts.join("|");
+	};
 	const mustOk = () => musts.every(([a, b]) => { for (let g = a; g < b; g++) if (pick[g] > 0) return true; return false; });
 	const final = (s) => {
 		let tot = s;
@@ -210,6 +253,19 @@ export function solveFill(groups, D, need, o = {}) {
 			if (!final(s)) return;
 			if (!mustOk()) return;
 			out.push({ pick: Array.from(pick), used, price });
+			// 同じ効果の別の候補に差し替えたもの（1か所ずつ）も加える
+			for (let h = 0; h < G && out.length < want; h++) {
+				const alt = liveOpts(groups[h].def).alts.get(pick[h]);
+				if (!alt) continue;
+				for (const a of alt) {
+					if (out.length >= want) break;
+					const p2 = Array.from(pick); p2[h] = a;
+					const opts = groups[h].def.opts;
+					const sig = sigOf(p2);
+					if (out.some((x) => sigOf(x.pick) === sig)) continue;
+					out.push({ pick: p2, used, price: price - opts[pick[h]].price + opts[a].price });
+				}
+			}
 			return;
 		}
 		// あと (maxUsed - used) 個の枠を使って届く見込みがあるか（目標ごと・全体）
@@ -221,11 +277,13 @@ export function solveFill(groups, D, need, o = {}) {
 		if (R > 1e-9 && pre(topP[g], r) < R - 1e-9) return;
 		if (ax && aspdUpper(ax.a + su[ax.iA] + pre(tk[ax.iA], r), ax.p + su[ax.iP] + pre(tk[ax.iP], r), ax.f + su[ax.iF] + pre(tk[ax.iF], r)) < ax.T - 1e-9) return;
 		for (let l = 0; l < lamSet.length; l++) { const lam = lamSet[l]; let x = lamD[l]; for (let k = 0; k < K; k++) x -= lam[k] * su[k]; if (x > 1e-9 && pre(lamPre[l][g], r) < x - 1e-9) return; }
-		const gr = groups[g], opts = gr.def.opts;
+		const gr = groups[g], opts = gr.def.opts, live = liveOpts(gr.def).reps;
 		const same = g > 0 && groups[g - 1].def === gr.def;
 		const from = same ? pick[g - 1] : 0;
 		const nx = stack[g + 1], nu = stackU[g + 1];
-		for (let oi = from; oi < opts.length; oi++) {
+		for (let li = 0; li < live.length; li++) {
+			const oi = live[li];
+			if (oi < from) continue;
 			const u2 = used + (oi > 0 ? 1 : 0);
 			if (u2 > maxUsed) break;
 			const d = opts[oi].d, pt = opts[oi].pot;

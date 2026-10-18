@@ -820,7 +820,7 @@ async function runSearch() {
 			maxResults: conf.maxResults,
 			priceOf: priceOfFactory(prices),
 			onProgress: (text, ratio) => { if (!token.stop) { progressBox.textContent = text; setBar(ratio); } },
-			onActivity: (line, lane) => { if (!token.stop) pushLive(line, lane); },
+			onActivity: (line, lane, key) => { if (!token.stop) pushLive(line, lane, key); },
 			// 見つかったものから順に結果に出す
 			onResults: (results, ctx) => { if (!token.stop) { lastResults = { results, ...ctx, conds }; renderResults(); } },
 			shouldStop: () => token.stop,
@@ -874,8 +874,18 @@ function laneOf(id) {
 	}
 	return l;
 }
-function pushLive(line, lane = -1) {
+function pushLive(line, lane = -1, key = null) {
 	const l = laneOf(lane);
+	// key 付きの行（累計を出し直す報告など）は、前に出した同じ key の行をその場で書き換える
+	if (key != null) {
+		const i = (l.keys ||= []).lastIndexOf(key);
+		if (i >= 0) {
+			l.lines[i] = line;
+			l.dirty = true;
+			if (!liveTimer) liveTimer = setTimeout(flushLive, 100);
+			return;
+		}
+	}
 	// 「考えていること」で同じ種類の行（時刻のあと「:」までが同じ）が続くときは、最新の1行にまとめて回数を付ける（大事な行が押し出されないように）
 	if (lane === -2) {
 		const head = String(line).replace(/^\[[^\]]*\]\s*/, "").split(/[:：]/)[0];
@@ -889,7 +899,8 @@ function pushLive(line, lane = -1) {
 		l.lastHead = head; l.rep = 1;
 	}
 	l.lines.push(line);
-	if (l.lines.length > (lane === -3 ? 1 : lane === -2 ? 24 : LIVE_LINES)) l.lines.shift();
+	(l.keys ||= []).push(key);
+	if (l.lines.length > (lane === -3 ? 1 : lane === -2 ? 24 : LIVE_LINES)) { l.lines.shift(); l.keys.shift(); }
 	l.dirty = true;
 	if (liveTimer) return;
 	liveTimer = setTimeout(flushLive, 100);

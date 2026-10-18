@@ -1329,7 +1329,7 @@ export async function search(opt) {
 					exec(t).then(async (r) => {
 						nodes += r.nodes; finishedTasks++;
 						showTrail(r);
-						if (r.capped) { cappedN += r.capped; say(`枠の当てはめが手数の上限（${(3e6).toLocaleString()}手）に達して打ち切った装備の組があります（累計 ${cappedN}組）。この組は結果に入っていない可能性があります`); }
+						if (r.capped) { cappedN += r.capped; onActivity(`[${clock()}] 枠の当てはめが手数の上限（${(3e6).toLocaleString()}手）に達して打ち切った装備の組があります（累計 ${cappedN}組）。この組は結果に入っていない可能性があります`, -2, "capped"); }
 						if (r.aborted) {
 							// 時間切れ: 調べ終えた候補の分（kept）は結果を使い、残りを細かく分けて積み直す
 							aborts++; created += r.sub.length;
