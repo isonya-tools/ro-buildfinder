@@ -82,6 +82,13 @@ onmessage = async ({ data }) => {
 		if (!warm) { full(model); core(model); warm = true; }
 		// 支援欄の開閉（開いている欄の設定だけ計算に入る）などは毎回画面側に合わせる（戦闘計算で書き換わる遠距離かどうかも戻す）
 		for (const [k, v] of Object.entries(st || {})) setters[k]?.(v);
+		if (type === "expand") {
+			// カード・エンチャ枠の組み合わせの絞り込み（計算本体は使わない）
+			const { expandSlots } = await import("./bf-prune.js");
+			const j = model;
+			postMessage({ id, v: expandSlots(j.slots, j.d0, j.choices, j.need, j.price0) });
+			return;
+		}
 		if (type === "skill") {
 			const r = full(model)?.activeResultArray?.[0];
 			postMessage({ id, t: { cf: Math.round((r?.castFixed || 0) * 1000), ct: Math.round((r?.coolTime || 0) * 1000) } });

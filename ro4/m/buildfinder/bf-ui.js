@@ -4,12 +4,13 @@
  * シミュ専用の設定はクッキー（bf_conf）に保存する（URL出力には入れない）。
  */
 import {
-	BF_REGIONS, regionItem, getRefine, search, evalModel, skillTimes, nakedModel, modelFromScreen, attackSkillsOf,
+	BF_REGIONS, regionItem, getRefine, getTrans, refineLabel, search, evalModel, skillTimes, nakedModel, modelFromScreen, attackSkillsOf,
 	itemName, cardName, itemSlotCount, loadOfficial, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped, setBuffOn,
 	fixedLock, withoutRegion, cancelPending,
 } from "./bf-engine.js";
 import { BF_METRICS, BF_GROUPS, BF_METRIC_BY_KEY, ELM_NAMES } from "./bf-metrics.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
+import { GetItemExplainText } from "../../../engine/equip/item.h.js";
 import { CardObjNew } from "../../../engine/equip/card.dat.js";
 import { loadPrices, priceOfFactory } from "./bf-price.js";
 import { applyModelToScreen } from "./bf-apply.js";
@@ -57,6 +58,7 @@ const defaultConf = () => ({
 	enchRemoved: [],  // 一覧から外したエンチャント（今付いていても自動では入れ直さない）
 	cardGoalRows: null, // [[カードID, 目標の枚数 or null]]（エンチャントと同じ仕組み）
 	cardGoalRemoved: [],
+	keepEmpty: {},    // 固定装備で、空き枠（カード・エンチャント）も空のまま固定する部位（部位キー → true）
 	ngItems: [], ngCards: [],
 	maxResults: 10, sort: "changes",
 	maxResultsV: 2,   // 表示件数を 10/30/100 の選択式にした版
@@ -197,6 +199,66 @@ function potentialTip(p) {
 	return box;
 }
 const skillInfoOf = (name) => skillInfo?.[String(name).replace(/\s+/g, "")] || null;
+
+// ---- 検索結果の装備・カード・エンチャントの説明（マウスオーバー） ----
+// エンチャントはエンチャントDBの整理済みの説明、カード・装備は公式の説明（bf-desc.json、tools-bf-desc.mjs で作る）。
+// 無いものはらとりおの性能データから文章を作る
+let descData = null, descLoading = null;
+function loadDesc() {
+	if (!descLoading) descLoading = fetch(new URL("./bf-desc.json", import.meta.url)).then((r) => r.json()).then((d) => { descData = d; }).catch(() => { descData = { e: {}, c: {}, i: {} }; });
+	return descLoading;
+}
+function generatedDesc(kind, id) {
+	const row = kind === "item" ? ItemObjNew[id] : CardObjNew[id];
+	if (!row) return "";
+	const sp = row.slice(kind === "item" ? 11 : 5), lines = [];
+	for (let i = 0; i + 1 < sp.length; i += 2) {
+		let t = null;
+		try { t = GetItemExplainText(sp[i], sp[i + 1]); } catch { t = null; }
+		if (!t || !t.length) continue;
+		for (let j = 1; j < t.length; j++) lines.push(String(t[0][1] || "") + String(t[j][1] || ""));
+	}
+	const detail = String(row[kind === "item" ? 10 : 4] ?? "");
+	if (detail && detail !== "0") for (const l of detail.replace(/<br>$/i, "").split(/<br>/i)) { const x = l.replace(/<[^>]*>/g, "").trim(); if (x) lines.push(x); }
+	return lines.join("\n");
+}
+function descText(kind, id) {
+	const d = descData || { e: {}, c: {}, i: {} };
+	if (kind === "item") return d.i[id] ? { text: d.i[id] } : { text: generatedDesc("item", id), gen: true };
+	const t = isEnchant(id) ? d.e[id] : d.c[id];
+	return t ? { text: t } : { text: generatedDesc("card", id), gen: true };
+}
+function descTip(kind, id) {
+	const { text, gen } = descText(kind, id);
+	const box = h("div", { class: "bf-desc" }, h("div", { class: "bf-tip-title" }, kind === "item" ? itemName(id) : cardName(id)));
+	const [body, spec] = String(text || "").split("\n§\n");
+	for (const line of body.split("\n")) {
+		if (!line || line === "\x06") continue;
+		if (line.startsWith("\x05")) { box.append(h("div", { class: "bf-tip-note bf-desc-intro" }, line.slice(1))); continue; }
+		const mm = line.match(/^\x02(.*?)\x03\s*(.*)$/);
+		if (mm) box.append(h("div", { class: "bf-desc-cond" }, h("b", {}, mm[1].replace(/：$/, "")), ...(mm[2] ? mm[2].split(" ／ ").map((x) => h("div", { class: "bf-desc-ef" }, x)) : [])));
+		else box.append(h("div", { class: "bf-desc-ln" }, line));
+	}
+	if (!body.trim()) box.append(h("div", { class: "bf-tip-note" }, "説明なし"));
+	if (spec) box.append(h("div", { class: "bf-tip-note bf-desc-spec" }, spec));
+	if (gen && body.trim()) box.append(h("div", { class: "bf-tip-note" }, "※らとりおの性能データから作った説明"));
+	return box;
+}
+/** 名前にマウスを乗せると説明を出す */
+function withDesc(kind, id, label) {
+	const el = h("span", { class: "bf-hasdesc" }, label);
+	el.addEventListener("mouseenter", () => loadDesc());
+	el.addEventListener("mousemove", (e) => { if (descData) showTip(e, descTip(kind, id)); else loadDesc().then(() => showTip(e, descTip(kind, id))); });
+	el.addEventListener("mouseleave", () => { hideTip(); });
+	// クリックで公式ツールのそのアイテムのページを新しいウィンドウで開く（公式IDが分かるものだけ）
+	const open = () => {
+		const oid = descData?.o?.[kind === "item" ? "i" : isEnchant(id) ? "e" : "c"]?.[id];
+		if (oid) window.open(`https://rotool.gungho.jp/item/${oid}/0/`, "_blank", "noopener");
+	};
+	el.addEventListener("click", () => { if (descData) open(); else loadDesc().then(open); });
+	loadDesc();
+	return el;
+}
 
 // ---- ツールチップ ----
 let tip;
@@ -427,7 +489,7 @@ function goalRow(kind, row, i, counts) {
 		if (!window.TomSelect) return;
 		const ts = new window.TomSelect(sel, {
 			...kanaSelectOptions(g.names()),
-			maxOptions: 200, placeholder: cid ? "" : g.place, allowEmptyOption: true,
+			dropdownParent: "body", maxOptions: 200, placeholder: cid ? "" : g.place, allowEmptyOption: true,
 			onChange: (v) => {
 				const id = Number(v) || 0;
 				if (!id) return;
@@ -482,6 +544,8 @@ async function renderSkillsInner(model) {
 		skillTs = new window.TomSelect(sel, {
 			...kanaSelectOptions(hidden.map(([id, name]) => [id, name]), () => ""),
 			maxOptions: 300, placeholder: "消したスキルを戻す（名前を入力）", allowEmptyOption: true,
+			// スキル欄はスクロール枠なので、候補はページ直下に出して枠に隠れないようにする
+			dropdownParent: "body",
 			onChange: (v) => {
 				const id = Number(v) || 0;
 				if (!id) return;
@@ -591,13 +655,20 @@ function renderRegions(model) {
 		const names = (list) => list.filter((c) => c > 0).map(cardName).join(" / ") || "-";
 		const text = {
 			item: empty ? "-" : itemName(cur),
-			refine: r.refine && !empty ? "+" + (regionRefine(model, r) ?? 0) : "-",
+			refine: r.refine && !empty ? refineLabel(model, r) : "-",
 			card: empty ? "-" : names(ids.slice(0, nSlot)),
 			ench: empty ? "-" : names(ids.slice(nSlot)),
 		};
 		const btn = empty ? null : h("button", { type: "button", class: "bf-lock", disabled: running, onclick: () => removeRegion(r) }, "外す");
+		// 空き枠（付いていないカード・エンチャント枠）を探すか、空のまま固定するか。既定は探す
+		const keep = !!conf.keepEmpty?.[r.key];
+		const keepBtn = empty ? null : h("button", { type: "button", class: "bf-lock" + (keep ? " on" : ""), disabled: running, title: "固定した装備の空いているカード・エンチャント枠を、探す／空のまま固定する", onclick: () => {
+			conf.keepEmpty = { ...conf.keepEmpty, [r.key]: !keep };
+			if (keep) delete conf.keepEmpty[r.key];
+			saveConf(); renderRegions(model);
+		} }, keep ? "空き枠: 空のまま" : "空き枠: 探す");
 		regionBox.append(h("tr", {},
-			h("td", { class: "bf-lockcell" }, btn, h("span", { class: "bf-lockval" }, r.label)),
+			h("td", { class: "bf-lockcell" }, btn, keepBtn, h("span", { class: "bf-lockval" }, r.label)),
 			FIXED_COLS.map(([part]) => h("td", { class: text[part] === "-" ? "bf-dim" : "" }, text[part]))));
 	}
 }
@@ -623,7 +694,7 @@ function buildNg() {
 				...cardNames().map(([id, n]) => ({ value: "c" + id, text: n, n: searchNorm(n), y: readingOf(id) }))],
 			searchField: ["text"],
 			score: kanaSelectOptions([]).score,
-			maxOptions: 200, placeholder: "除外する装備・カード・エンチャントの名前を入力", allowEmptyOption: true,
+			dropdownParent: "body", maxOptions: 200, placeholder: "除外する装備・カード・エンチャントの名前を入力", allowEmptyOption: true,
 			onChange: (v) => {
 				if (!v) return;
 				addNg(v[0] === "i" ? "item" : "card", Number(v.slice(1)));
@@ -705,7 +776,7 @@ async function runSearch() {
 	try {
 		const res = await search({
 			conds, skillLv,
-			lock: fixedLock(modelFromScreen()),
+			lock: fixedLock(modelFromScreen(), conf.keepEmpty),
 			ngItems: conf.ngItems, ngCards: conf.ngCards,
 			maxResults: conf.maxResults,
 			priceOf: priceOfFactory(prices),
@@ -813,13 +884,13 @@ function resultDetail(r) {
 		const refine = getRefine(m, reg);
 		const pk = r.picks.find((p) => p.region.key === reg.key);
 		const itemCell = h("td", { class: "bf-eq-item" + (itemHit ? " bf-hit" : "") },
-			empty ? h("span", { class: "bf-zero" }, "なし") : [(refine ? `+${refine} ` : ""), itemName(iid)],
+			empty ? h("span", { class: "bf-zero" }, "なし") : [(refine || getTrans(m, reg) ? refineLabel(m, reg) + " " : ""), withDesc("item", iid, itemName(iid))],
 			itemHit && !empty ? ngButton("item", iid) : null,
 			pk?.pkg ? h("span", { class: "bf-set" }, "セット") : null);
 		const cardCells = reg.slots.map((s) => {
 			const cid = m.card[s] || 0;
 			const hit = cid !== (base.card[s] || 0);
-			return h("td", { class: hit ? "bf-hit" : "" }, cid ? [cardName(cid), hit ? ngButton("card", cid) : null] : h("span", { class: "bf-zero" }, "-"));
+			return h("td", { class: hit ? "bf-hit" : "" }, cid ? [withDesc("card", cid, cardName(cid)), hit ? ngButton("card", cid) : null] : h("span", { class: "bf-zero" }, "-"));
 		});
 		const priceCell = h("td", { class: "bf-eq-price" }, pk ? (pk.priceUnknown ? (pk.finalPrice ? fmtZeny(pk.finalPrice) + "＋不明" : "不明") : fmtZeny(pk.finalPrice)) : "");
 		table.append(h("tr", { class: changedRegions.has(reg.key) ? "bf-eq-changed" : "" }, h("th", {}, reg.label), itemCell, cardCells, priceCell));

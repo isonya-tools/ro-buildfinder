@@ -35,6 +35,7 @@ import { n_Skill7SW } from "../../../engine/ui/BuffItemAndFood.js";
 import { n_Skill8SW } from "../../../engine/ui/BuffOtherCategory.js";
 import { n_A_PassSkill, n_A_PassSkill4, n_A_PassSkill7, n_A_PassSkill8 } from "../../../engine/skill/skillstate.js";
 import * as pool from "./bf-pool.js";
+import { expandSlots as expandSlotsCore, paretoPrune, topByProgress, trimVariants, within } from "./bf-prune.js";
 
 const IDX_ID = 0, IDX_KIND = 1, IDX_SLOT = 5, IDX_NAME = 8;
 const CIDX_ID = 0, CIDX_KIND = 1, CIDX_NAME = 2;
@@ -95,6 +96,20 @@ export function getRefine(m, r) {
 	if (r.refine === "shadow") return m?.shadowEquip?.refined?.[r.shadow] || 0;
 	return r.refine === "weapon" ? m.weapon.atkPlus : r.refine ? m.defPlus[r.refine] : 0;
 }
+/** 超越段階（★）。武器と、頭上段・盾・鎧・肩・靴だけ */
+export function getTrans(m, r) {
+	if (r.refine === "weapon") return m?.weapon?.transcendence | 0;
+	return r.refine && r.refine !== "shadow" ? m?.defTranscendence?.[r.refine] | 0 : 0;
+}
+function setTrans(m, r, v) {
+	if (r.refine === "weapon") { if (m.weapon) m.weapon.transcendence = v; }
+	else if (r.refine && r.refine !== "shadow") { m.defTranscendence ??= {}; m.defTranscendence[r.refine] = v; }
+}
+/** 精錬値の表示（超越していれば「★1 +10」） */
+export function refineLabel(m, r) {
+	const t = getTrans(m, r);
+	return (t ? `★${t} ` : "") + "+" + getRefine(m, r);
+}
 function setRefine(m, r, v) {
 	if (r.refine === "shadow") { m.shadowEquip ??= { itemId: [], refined: [], rndOpt: [] }; m.shadowEquip.refined[r.shadow] = v; }
 	else if (r.refine === "weapon") m.weapon.atkPlus = v; else if (r.refine) m.defPlus[r.refine] = v;
@@ -104,6 +119,8 @@ function setRefine(m, r, v) {
  * 計算処理が精錬値を見る装備）と、エンチャントの精錬値の条件。精錬できない部位は+0だけ。
  */
 const refineLevelCache = new Map();
+/** 精錬値の上限（それより上は超越★で表す） */
+const MAX_REFINE = 10;
 /** codeOk(SPコード): 目標に関係する効果だけ見るときの判定（省略時は全部） */
 function refineLevelsOf(r, iid, codeOk = null) {
 	if (!r.refine) return [0];
@@ -117,12 +134,12 @@ function refineLevelsOf(r, iid, codeOk = null) {
 		if (codeOk && !codeOk(code)) continue;
 		const x = code % 100000000;
 		const over = Math.floor(x / 1000000);
-		if (over >= 1) { set.add(over); set.add(Math.min(20, over + 1)); }
+		if (over >= 1 && over <= MAX_REFINE) { set.add(over); set.add(Math.min(MAX_REFINE, over + 1)); }
 		if (Math.floor((x % 1000000) / 100000) >= 1) set.add(10);
 	}
-	if (isHardItem(iid)) for (const v of [7, 9, 10, 11]) set.add(v);
+	if (isHardItem(iid)) for (const v of [7, 9, 10]) set.add(v);
 	for (const m of enchantDetailOf(iid)) for (const need of m.values()) if (need > 0) set.add(need);
-	const out = [...set].filter((v) => v <= 20).sort((a, b) => a - b);
+	const out = [...set].filter((v) => v <= MAX_REFINE).sort((a, b) => a - b);
 	if (!codeOk) refineLevelCache.set(key, out);
 	return out;
 }
@@ -143,7 +160,7 @@ export function withoutRegion(model, r) {
 /** 部位を空にする（装備なし・カード/エンチャなし・精錬値0。武器は種類も素手に） */
 function clearRegion(m, r) {
 	setRegionItem(m, r, r.empty);
-	if (r.refine) setRefine(m, r, 0);
+	if (r.refine) { setRefine(m, r, 0); setTrans(m, r, 0); }
 	if (r.key === "weapon") m.weapon.type = 0;
 	for (const s of r.slots) if (s >= 0) m.card[s] = 0;
 }
@@ -283,11 +300,11 @@ async function evalAllAsync(model, skills = [], naked = {}, cards = [], elms = [
  * 「固定装備」: 画面で付けている装備（精錬値・カード・エンチャント込み）は固定し、空いているカード・エンチャント枠と
  * 何も付けていない部位だけを探す。シャドウ装備は探さない（常に今のまま）
  */
-export function fixedLock(model) {
+export function fixedLock(model, keepEmpty = {}) {
 	const lock = {};
 	for (const r of BF_REGIONS) {
 		if (r.shadow) lock[r.key] = { item: true, refine: true, card: true, ench: true };
-		else if (!isRegionEmpty(model, r)) lock[r.key] = { item: true, refine: true, card: true, ench: true, fill: true };
+		else if (!isRegionEmpty(model, r)) lock[r.key] = { item: true, refine: true, card: true, ench: true, fill: !keepEmpty[r.key] };
 	}
 	return lock;
 }
@@ -678,8 +695,8 @@ export async function search(opt) {
 		return out;
 	};
 
-	for (let ri = 0; ri < regions.length; ri++) {
-		const r = regions[ri];
+	// 部位ごとの候補づくりは部位どうしでも並列に回す（1部位ずつだと Worker が空く）。結果は部位の並びで入れる
+	await pmap(regions, async (r, ri) => {
 		const curItem = isRegionEmpty(base, r) ? 0 : regionItem(base, r);
 		const curCards = r.slots.map((s) => base.card[s] || 0);
 		onProgress("候補を調べています", done / totalWork);
@@ -786,7 +803,7 @@ export async function search(opt) {
 				}
 				slotChoices.push(opts);
 			}
-			for (const v of fromR(expandSlots(r, toR(zero()), slotChoices, priceOf, needR, 0))) {
+			for (const v of fromR(await expandSlots(r, toR(zero()), slotChoices, priceOf, needR, 0))) {
 				if (!v.cards.length) continue;
 				variants.push({ region: r, keep: true, itemId: curItem, cards: v.cards, d: v.d, price: v.price, count: v.cards.length, changed: 1, twoHand: twoHand0, usesShield: variants[0].usesShield });
 			}
@@ -806,7 +823,7 @@ export async function search(opt) {
 			const selfRel = rel.item(iid);
 			const levels = L[r.key].refine ? [getRefine(base, r)]
 				: selfRel ? refineLevelsOf(r, iid, rel.code)
-				: [...new Set([0, ...enchantDetailOf(iid).flatMap((mm) => [...mm.values()])])].filter((v) => v <= 20 && r.refine || v === 0).sort((a, b) => a - b);
+				: [...new Set([0, ...enchantDetailOf(iid).flatMap((mm) => [...mm.values()])])].filter((v) => v <= MAX_REFINE && r.refine || v === 0).sort((a, b) => a - b);
 			let prevD = null, prevEnch = -1;
 			for (const lv of levels) {
 				if (!keepOk(r, iid, lv)) continue;
@@ -824,7 +841,7 @@ export async function search(opt) {
 				if (!relevantR(toR(d)) && !slotChoices.some((o) => o.length)) continue;
 				// 同じ性能なら精錬値の低い方が残るように、精錬値ぶんだけ値段を重くして比べる
 				const itemPrice = (priceOf("item", iid) ?? UNKNOWN_PRICE) + lv;
-				for (const v of fromR(expandSlots(r, toR(d), slotChoices, priceOf, needR, itemPrice))) {
+				for (const v of fromR(await expandSlots(r, toR(d), slotChoices, priceOf, needR, itemPrice))) {
 					variants.push({ region: r, keep: false, itemId: iid, refine: lv, selfRel, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1, twoHand: r.key === "weapon" && isTwoHanded(iid), usesShield: r.key === "shield" });
 				}
 			}
@@ -832,17 +849,18 @@ export async function search(opt) {
 		}, CONC);
 		for (const list of perItem) for (const v of list) variants.push(v);
 		for (const v of variants) v.d = toR(v.d);
-		regionVariants.push(trimVariants(paretoPrune(variants, needR), needR, 300));
+		regionVariants[ri] = trimVariants(paretoPrune(variants, needR), needR, 300);
 		fromR(variants);
-		regionCtx.push(ctx);
-	}
+		regionCtx[ri] = ctx;
+	}, regions.length);
 
 	// ---- セット効果（複数部位をまとめて入れ替える候補） ----
 	const regionIndex = new Map(regions.map((r, i) => [r.key, i]));
 	const shieldLocked = !regionIndex.has("shield");
 	const baseShield = nitou || !isRegionEmpty(base, BF_REGIONS.find((r) => r.key === "shield"));
 	let pkgCount = 0;
-	for (const S of sets) {
+	// セットごとの効き目の計算は並列に（Worker を遊ばせない）。候補への追加は元の並びで順に
+	const prepSet = async (S) => {
 		await tick();
 		done++;
 		if (done % 10 === 0) onProgress("候補を調べています", done / totalWork);
@@ -860,9 +878,9 @@ export async function search(opt) {
 			used.add(r.key);
 			assign.push({ region: r, itemId: mid, already: false });
 		}
-		if (!ok || assign.every((a) => a.already)) continue;
+		if (!ok || assign.every((a) => a.already)) return null;
 		const wpn = assign.find((a) => a.region.key === "weapon" && !a.already);
-		if (wpn && isTwoHanded(wpn.itemId) && (assign.some((a) => a.region.key === "shield") || (shieldLocked && baseShield))) continue;
+		if (wpn && isTwoHanded(wpn.itemId) && (assign.some((a) => a.region.key === "shield") || (shieldLocked && baseShield))) return null;
 		// セットのメンバーも+0から。効果が出なければ、各メンバーを候補の中で一番高い精錬値にして確かめる
 		let d = null, bad = false;
 		for (const top of [false, true]) {
@@ -879,7 +897,13 @@ export async function search(opt) {
 			if (relevant(d)) break;
 			if (!assign.some((a) => !a.already && refineLevelsOf(a.region, a.itemId).length > 1)) break;
 		}
-		if (bad || !relevant(d)) continue;
+		if (bad || !relevant(d)) return null;
+		return { S, assign, d };
+	};
+	const preps = await pmap(sets, prepSet, CONC);
+	for (const pr of preps) {
+		if (!pr) continue;
+		const { S, assign, d } = pr;
 		const inDfs = assign.filter((a) => regionIndex.has(a.region.key)).sort((a, b) => regionIndex.get(a.region.key) - regionIndex.get(b.region.key));
 		const pkg = { id: S.setIndex, src: S.src, regions: inDfs.map((a) => regionIndex.get(a.region.key)), members: S.members };
 		for (let k = 0; k < inDfs.length; k++) {
@@ -890,7 +914,7 @@ export async function search(opt) {
 			if (a.already) vs = ctx.keepVariants.map((v) => ({ ...v }));
 			else {
 				const slotChoices = await slotChoicesFor(ctx, a.itemId, a.refine);
-				vs = expandSlots(a.region, zero(), slotChoices, priceOf, need, priceOf("item", a.itemId) ?? UNKNOWN_PRICE).map((v) => ({
+				vs = (await expandSlots(a.region, zero(), slotChoices, priceOf, need, priceOf("item", a.itemId) ?? UNKNOWN_PRICE)).map((v) => ({
 					region: a.region, keep: false, itemId: a.itemId, refine: a.refine, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1,
 					twoHand: a.region.key === "weapon" && isTwoHanded(a.itemId), usesShield: a.region.key === "shield",
 				}));
@@ -1018,7 +1042,9 @@ export async function search(opt) {
 					next.push({ sum, picks, changes: st.changes + v.changed, cost: st.cost + v.price, th });
 				}
 			}
-			next.sort((a, b) => (score(b.sum) - score(a.sum)) || (a.changes - b.changes) || (a.cost - b.cost));
+			// 点数は並べ替えの前に1回だけ計算する
+			for (const x of next) x.sc = score(x.sum);
+			next.sort((a, b) => (b.sc - a.sc) || (a.changes - b.changes) || (a.cost - b.cost));
 			states = next.slice(0, WIDTH);
 			// 足し算の見込みは、入れ替えた部位どうしの組み合わせ（セットが切れる、固定詠唱は一番大きいものだけ効く、
 			// ASPDは足し算にならない）でずれるので、上位は実計算した値に置き換えて並べ直す
@@ -1028,7 +1054,9 @@ export async function search(opt) {
 				st.sum = keys.map((k) => val[k] - baseVal[k]);
 				st.real = true;
 			}, CONC);
-			states.sort((a, b) => (score(b.sum) - score(a.sum)) || (a.changes - b.changes) || (a.cost - b.cost));
+			// 点数は並べ替えの前に1回だけ計算する
+			for (const x of states) x.sc = score(x.sum);
+			states.sort((a, b) => (b.sc - a.sc) || (a.changes - b.changes) || (a.cost - b.cost));
 		}
 		const goal = keys.filter((_, k) => need[k] > 0).length;
 		const done = states.filter((st) => score(st.sum) >= goal - 1e-6 && !(st.th && shieldLocked && baseShield))
@@ -1192,100 +1220,18 @@ function pickPrice(v, priceOf) {
 /** 部位の4枠（カード＋エンチャ3枠）の選び方を展開する（劣るものは途中で捨てる） */
 /** 値段が分からない物は、並べるときに値段の分かる物より後ろにする */
 const UNKNOWN_PRICE = 1e12;
-function expandSlots(region, d0, slotChoices, priceOf, need, price0) {
-	let partial = [{ cards: [], d: d0.slice(), price: price0 }];
-	for (let s = 0; s < slotChoices.length; s++) {
-		const opts = slotChoices[s] || [];
-		if (!opts.length) continue;
-		const next = [];
-		for (const pv of partial) {
-			next.push(pv);
-			for (const o of opts) {
-				next.push({ cards: [...pv.cards, [region.slots[s], o.id]], d: pv.d.map((x, i) => x + o.d[i]), price: pv.price + (isEnchant(o.id) ? 0 : priceOf("card", o.id) ?? UNKNOWN_PRICE) });
-			}
-		}
-		// 条件が多いと組み合わせが爆発するので、目標への近さの上位だけ残す
-		partial = topByProgress(paretoPrune(next, need), need, EXPAND_KEEP);
+/**
+ * カード・エンチャ枠の組み合わせを広げて絞る（重いので Worker に任せる。使えないときはこの画面のスレッドで）
+ */
+async function expandSlots(region, d0, slotChoices, priceOf, need, price0) {
+	const choices = slotChoices.map((opts) => (opts || []).map((o) => ({ id: o.id, d: o.d, p: isEnchant(o.id) ? 0 : priceOf("card", o.id) ?? UNKNOWN_PRICE })));
+	const job = { slots: region.slots, d0, choices, need, price0 };
+	if (usePool && choices.reduce((a, o) => a + o.length, 0) > 8) {
+		try { return await pool.run("expand", job); } catch (e) { if (e instanceof pool.CancelError) throw new BfStopped(); }
 	}
-	return partial;
+	return expandSlotsCore(job.slots, d0, choices, need, price0);
 }
 
 export class BfStopped extends Error {}
 class DfsLimit extends Error {}
 
-/** 目標への近さ（目標ごとに「伸び÷足りない分」を1までで足したもの） */
-function progressOf(v, need) {
-	let p = 0;
-	for (let i = 0; i < need.length; i++) if (need[i] > 0) p += Math.min(1, Math.max(0, v.d[i]) / need[i]);
-	return p;
-}
-const EXPAND_KEEP = 80, PRUNE_INPUT_MAX = 3000;
-/**
- * 目標への近さの上位 n 件（同じなら安い順）。n 件以下ならそのまま。
- * 目標が多いと、1つの目標にしか効かない物（例: 錐効果だけのヴァルキリーカースブライト）が近さで負けて落ちるので、
- * 目標ごとに一番伸びるもの（PER_GOAL_KEEP 件）は必ず残す
- */
-const PER_GOAL_KEEP = 3;
-function topByProgress(list, need, n) {
-	if (list.length <= n) return list;
-	const keep = new Set();
-	for (let i = 0; i < need.length; i++) {
-		if (!(need[i] > 0)) continue;
-		const best = list.filter((v) => v.d[i] > 1e-9).sort((a, b) => (Math.min(b.d[i], need[i]) - Math.min(a.d[i], need[i])) || (a.price - b.price)).slice(0, PER_GOAL_KEEP);
-		for (const v of best) keep.add(v);
-	}
-	const rest = list.filter((v) => !keep.has(v)).map((v) => [progressOf(v, need), v]).sort((a, b) => (b[0] - a[0]) || (a[1].price - b[1].price));
-	return [...keep, ...rest.slice(0, Math.max(0, n - keep.size)).map((x) => x[1])];
-}
-
-/** 部位の候補を n 件に絞る（「そのまま」は必ず残し、並びは元の安い順のまま） */
-function trimVariants(list, need, n) {
-	if (list.length <= n) return list;
-	const keep = new Set(topByProgress(list, need, n));
-	return list.filter((v) => keep.has(v) || !v.changed);
-}
-
-/** a（並べ替え済み）の中身が全部 b（並べ替え済み）に含まれる（b は a に何か足しただけ） */
-function within(a, b) {
-	let j = 0;
-	for (const x of a) { while (j < b.length && b[j] < x) j++; if (b[j] !== x) return false; j++; }
-	return true;
-}
-
-/** 条件に関係する指標だけで比べ、他より全面的に劣る組を捨てる（値段・個数も比べる） */
-function paretoPrune(list, need) {
-	// 比べるのは件数の2乗の手間なので、多すぎるときは先に目標への効き目の上位に絞る（値段では切らない）
-	// 「そのまま（変えない）」は効き目0でも必ず残す（無いと、その部位を変えない組み合わせが作れない）
-	if (list.length > PRUNE_INPUT_MAX) list = [...new Set([...list.filter((v) => !v.changed), ...topByProgress(list, need, PRUNE_INPUT_MAX)])];
-	const idx = need.map((n, i) => i).filter((i) => need[i] > 0);
-	const cap = (v, i) => Math.min(v.d[i], need[i]);
-	// 中身: 効果を出している物（カード・エンチャントと、装備自体に効果があるならその装備）。
-	// エンチャントを付けるためだけの装備は中身に入れない（同じエンチャントなら安い装備に絞る）
-	const what = (v) => {
-		const w = (v.cards || []).map((c) => "c" + c[1]);
-		if (v.selfRel !== false && v.itemId) w.push("i" + v.itemId);
-		return w.sort();
-	};
-
-	const sorted = list.slice().sort((a, b) => (a.price - b.price) || ((a.count ?? a.cards?.length ?? 0) - (b.count ?? b.cards?.length ?? 0)));
-	const kept = [];
-	outer: for (const v of sorted) {
-		for (const k of kept) {
-			if (k.price > v.price) continue;
-			const kc = k.count ?? k.cards.length, vc = v.count ?? v.cards.length;
-			if (kc > vc) continue;
-			if ((k.changed ?? 0) > (v.changed ?? 0)) continue;
-			if (k.twoHand && !v.twoHand) continue;
-			let dominated = true, better = false;
-			for (const i of idx) {
-				if (cap(k, i) < cap(v, i) - 1e-9) { dominated = false; break; }
-				if (cap(k, i) > cap(v, i) + 1e-9) better = true;
-			}
-			// 性能で負けているものは捨てる。性能が同じなら、中身が違うもの（同じ耐性に届く別のカードなど）は
-			// 値段が高くても別の候補として残し、中身が同じもの・余計な物を足しただけのものは捨てる
-			if (dominated && (better || within(what(k), what(v)))) continue outer;
-		}
-		kept.push(v);
-	}
-	return kept;
-}

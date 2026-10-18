@@ -36,8 +36,8 @@ export function applyModelToScreen(model, regions) {
 			ent.itemId = model.equip[r.eq];
 		}
 		// 精錬値も結果の値にする（精錬値の条件があるエンチャ・過剰精錬の効果が結果と同じになるように）
-		if (r.refine === "weapon") ent.refine = model.weapon?.atkPlus | 0;
-		else if (r.refine) ent.refine = model.defPlus?.[r.refine] | 0;
+		if (r.refine === "weapon") { ent.refine = model.weapon?.atkPlus | 0; ent.transcendence = model.weapon?.transcendence | 0; }
+		else if (r.refine) { ent.refine = model.defPlus?.[r.refine] | 0; ent.transcendence = model.defTranscendence?.[r.refine] | 0; }
 		ent.cardIds = r.slots.map((s) => model.card[s] || 0);
 		ent.cardCategoryIds = null;
 	}

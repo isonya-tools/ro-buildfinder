@@ -6,10 +6,10 @@
 let workers = null, failed = false, seq = 0, st = {};
 const pending = new Map(); // id → {resolve, reject, w}
 
-/** 立てる Worker の数（論理コア数−1、最低2・最大16） */
+/** 立てる Worker の数（論理コア数−1、最低2・最大32） */
 export function poolSize() {
 	const n = (navigator.hardwareConcurrency || 4) - 1;
-	return Math.max(2, Math.min(16, n));
+	return Math.max(2, Math.min(32, n));
 }
 
 function makeWorker() {

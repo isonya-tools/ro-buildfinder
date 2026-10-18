@@ -179,11 +179,14 @@ export function inSameSet(a, b) {
 	return !!(x && y && x.some((r) => y.includes(r)));
 }
 /** 計算処理の中でIDを直接見ているカード・エンチャントか */
+const hardCardMemo = new Map();
 export function isHardCard(id) {
 	if (!hard) return false;
-	for (const c of Object.values(hard)) if (c.cards?.has(id)) return true;
-	for (const c of Object.values(hardProbe || {})) if (c.cards?.has(id)) return true;
-	return false;
+	let v = hardCardMemo.get(id);
+	if (v !== undefined) return v;
+	v = Object.values(hard).some((c) => c.cards?.has(id)) || Object.values(hardProbe || {}).some((c) => c.cards?.has(id));
+	hardCardMemo.set(id, v);
+	return v;
 }
 /** 計算処理の中でIDを直接見ている装備か（精錬値で効果が変わるかもしれないもの） */
 export function isHardItem(id) {
