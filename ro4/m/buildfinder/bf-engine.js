@@ -36,7 +36,7 @@ import { n_Skill8SW } from "../../../engine/ui/BuffOtherCategory.js";
 import { n_A_PassSkill, n_A_PassSkill4, n_A_PassSkill7, n_A_PassSkill8 } from "../../../engine/skill/skillstate.js";
 import * as pool from "./bf-pool.js";
 import { paretoPrune, within } from "./bf-prune.js";
-import { pPlus, finishDef, solveFill } from "./bf-fill.js";
+import { pPlus, finishDef, solveFill, AUX_NEED, aspdOf, aspdUpper } from "./bf-fill.js";
 import { topSums, optimizeLambda } from "./bf-bound.js";
 import { dfsTask, packBase } from "./bf-dfs.js";
 import { w_SE } from "../../../engine/equip/itemset.dat.js";
@@ -365,7 +365,7 @@ export function goalEquivalent(model, cid) {
 	const m = cloneModel(naked);
 	m.card[slot] = cid;
 	const v0 = evalModel(naked), v1 = evalModel(m);
-	const changed = BF_METRICS.filter((mt) => Math.abs((v1[mt.key] ?? 0) - (v0[mt.key] ?? 0)) > 1e-9);
+	const changed = BF_METRICS.filter((mt) => !mt.hidden && Math.abs((v1[mt.key] ?? 0) - (v0[mt.key] ?? 0)) > 1e-9);
 	if (changed.length !== 1) return null;
 	const mt = changed[0];
 	if (mt.kind === "elm") return { key: "elm:" + v1[mt.key], perUnit: 1, elm: true, label: mt.label + "が" + (ELM_NAMES[v1[mt.key]] ?? "") };
@@ -567,7 +567,7 @@ export async function search(opt) {
 	const ngItemSet = new Set(ngItems.map(Number));
 	const ngCardSet = new Set(ngCards.map(Number));
 
-	const keys = conds.map((c) => c.key);
+	let keys = conds.map((c) => c.key);
 	const skills = [...new Set(keys.filter((k) => k.startsWith("sk:")).map((k) => Number(k.split(":")[1])))].map((id) => ({ id, lv: skillLv[id] || 1 }));
 	const cards = keys.filter((k) => k.startsWith("card:")).map((k) => Number(k.slice(5)));
 	const elms = keys.filter((k) => k.startsWith("elm:")).map((k) => Number(k.slice(4)));
@@ -616,7 +616,15 @@ export async function search(opt) {
 	const coreKeys = conds.filter((c) => !c.key.startsWith("sk:"));
 
 	const baseVal = await evalM(base);
-	const need = conds.map((c) => c.target - baseVal[c.key]);
+	// ASPD は足し算で見込まず、らとりおの式（ASPD = 前 + (200 - 前)×ASPD%/100 + 固定増加）で組み立てる。
+	// 探索では内訳（ASPD%を掛ける前の値・ASPD%・固定増加）をそれぞれ足し算で持ち回り、ASPD はその都度この式で出す。
+	// 上限（193/190）と小数1桁の切り捨ての前の値で比べる（目標が上限以下なら同じこと）。式が基準の構成で合わないとき（オーバードブーストで固定など）は今までどおり足し算
+	const aspdCond = conds.find((c) => c.key === "aspd");
+	const ax0 = aspdCond && !baseVal.aspdFixed && aspdCond.target <= baseVal.aspdCap && Math.abs(aspdOf(baseVal.aspdA, baseVal.aspdP, baseVal.aspdF) - baseVal.aspdRaw) < 1e-6;
+	const dims = ax0 ? [...conds.map((c) => (c === aspdCond ? { ...c, key: "aspdRaw" } : c)), ...["aspdA", "aspdP", "aspdF"].map((key) => ({ key, target: AUX_NEED, aux: true }))] : conds;
+	keys = dims.map((c) => c.key);
+	const ax = ax0 ? { iA: keys.indexOf("aspdA"), iP: keys.indexOf("aspdP"), iF: keys.indexOf("aspdF"), a: baseVal.aspdA, p: baseVal.aspdP, f: baseVal.aspdF, T: aspdCond.target } : null;
+	const need = dims.map((c) => (c.aux ? AUX_NEED : c.target - baseVal[c.key]));
 	const baseWeapon = base.equip[R.EQUIP_REGION_ID_ARMS];
 	// 今の装備で全部の目標を満たしているなら、探さずに「変更なし」を返す
 	if (meets(baseVal)) {
@@ -870,7 +878,7 @@ export async function search(opt) {
 		const clearedD = vecFrom(clearedVal, baseVal);
 		// この部位の候補は「部位を空にした状態」から見た足りない分で選ぶ。
 		// 今の装備（または外した部位に残ったカード・エンチャ）で満たしている目標は、入れ替えると失うので、取り戻す物も候補に残す
-		const needR = conds.map((c, i) => (need[i] > 0 || c.target - clearedVal[c.key] > 1e-9) ? Math.max(c.target - clearedVal[c.key], 1e-6) : 0);
+		const needR = dims.map((c, i) => c.aux ? AUX_NEED : (need[i] > 0 || c.target - clearedVal[c.key] > 1e-9) ? Math.max(c.target - clearedVal[c.key], 1e-6) : 0);
 		const relevantR = (d) => d.some((x, i) => x > 1e-9 && needR[i] > 0);
 		const toR = (d) => d.map((x, i) => x - clearedD[i]);
 		const fromR = (list) => { for (const v of list) v.d = v.d.map((x, i) => x + clearedD[i]); return list; };
@@ -1169,8 +1177,9 @@ export async function search(opt) {
 	};
 	const upperP = (i, b) => { const pre = topSumP[i]; return pre[Math.min(b, pre.length - 1)]; };
 	// 全部の部位で一番伸びるものを選んでも届かない条件（足し算の見込み）。結果が0件のときに知らせる
-	const unreachable = conds.filter((c, k) => upper(0, k, n) < need[k] - 1e-9).map((c) => c.label || c.key);
-	const normOf = (k) => Math.max(1, Math.abs(conds[k].target) * 0.05);
+	const unreachable = dims.filter((c, k) => !c.aux && upper(0, k, n) < need[k] - 1e-9).map((c) => c.label || c.key);
+	if (ax && !unreachable.includes(aspdCond.label || "aspd") && aspdUpper(ax.a + upper(0, ax.iA, n), ax.p + upper(0, ax.iP, n), ax.f + upper(0, ax.iF, n)) < ax.T - 1e-9) unreachable.push(aspdCond.label || aspdCond.key);
+	const normOf = (k) => Math.max(1, Math.abs(dims[k].target) * 0.05);
 	const scaleOf = need.map((x, k) => (x > 0 ? x : normOf(k)));
 
 	// 見つけた組み合わせは、その場で実計算で確かめて結果に入れる（onResults で途中経過を返す）
@@ -1256,13 +1265,13 @@ export async function search(opt) {
 	// 探索は小さな仕事（途中まで決めた組から先を探す）に分けて、Worker の束に配る（Worker が使えないときはこの画面のスレッドで順に）。
 	// 仕事が時間内に終わらなければ、結果を捨てて1部位ぶん細かく分け直す
 	const TASK_MS = 300;
-	const tasksCtx = () => ({ trail: true, n, K, need, W, scaleOf, LV, LU: levelLU, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom, failMemo, budget, feas: feasMode, nL, topL, lneed });
+	const tasksCtx = () => ({ trail: true, n, K, ax, need, W, scaleOf, LV, LU: levelLU, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom, failMemo, budget, feas: feasMode, nL, topL, lneed });
 	let levelLU = [];
 	const searchLevel = async () => {
 		const ctx = tasksCtx();
 		const workers = pool.available();
 		if (workers) {
-			if (poolBase !== LV) { pool.broadcast("dfsBase", packBase({ n, K, need, W, scaleOf, LV, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom })); poolBase = LV; }
+			if (poolBase !== LV) { pool.broadcast("dfsBase", packBase({ n, K, ax, need, W, scaleOf, LV, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom })); poolBase = LV; }
 			pool.broadcast("dfsLevel", { trail: true, LU: levelLU, budget, feas: feasMode, nL, topL, lneed });
 		}
 		// 仕事の置き場（後ろから取り出す。細かく分けた組は逆順に積んで、元の順に取り出す）
@@ -1374,6 +1383,7 @@ export async function search(opt) {
 		return [...keep, ...list.filter((v) => v.pkg)];
 	});
 	prepLists(feasLists);
+	if (ax) say(`ASPD は足し算で見込まず、内訳（ASPD%を掛ける前 ${ax.a.toFixed(1)}・ASPD% ${ax.p}・固定 +${ax.f}）を持ち回って、らとりおの式 前+(200-前)×ASPD%+固定 で判定します`);
 	say(`まず、値段や中身の違いを無視して、何か所変えれば届くかを調べます（候補 ${feasLists.map((l) => l.length).join("/")}件）`);
 	feasMode = true;
 	let firstBudget = n + 1;

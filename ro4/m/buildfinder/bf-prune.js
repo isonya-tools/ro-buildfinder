@@ -2,6 +2,8 @@
  * 部位の候補の絞り込み（性能で負ける組を捨てる・目標への近さの上位を残す・カード/エンチャ枠の組み合わせを広げる）.
  * 画面のスレッドと計算用の Worker の両方から使う（画面や計算本体には触らない）。
  */
+import { isAux } from "./bf-fill.js";
+
 export function expandSlots(slots, d0, slotChoices, need, price0) {
 	let partial = [{ cards: [], d: d0.slice(), price: price0 }];
 	for (let s = 0; s < slotChoices.length; s++) {
@@ -68,10 +70,11 @@ export function paretoPrune(list, need, o = {}) {
 	// 比べるのは件数の2乗の手間なので、多すぎるときは先に目標への効き目の上位に絞る（値段では切らない）
 	// 「そのまま（変えない）」は効き目0でも必ず残す（無いと、その部位を変えない組み合わせが作れない）
 	if (list.length > PRUNE_INPUT_MAX) list = [...new Set([...list.filter((v) => !v.changed), ...topByProgress(list, need, PRUNE_INPUT_MAX)])];
-	const idx = need.map((n, i) => i).filter((i) => need[i] > 0);
+	// ASPD の内訳（isAux）も比べる（ASPD は内訳のどれにも増えるので、内訳が全部上回っていれば ASPD も負けない）。内訳は頭打ちにしない
+	const idx = need.map((n, i) => i).filter((i) => need[i] > 0 || isAux(need, i));
 	// 比べる値（目標で頭打ちにした伸び）は先に1回だけ作っておく（比べる回数が多いので）
 	const caps = new Map();
-	for (const v of list) caps.set(v, Float64Array.from(idx, (i) => Math.min(v.d[i], need[i])));
+	for (const v of list) caps.set(v, Float64Array.from(idx, (i) => (need[i] > 0 ? Math.min(v.d[i], need[i]) : v.d[i])));
 	const whatMemo = new Map();
 	// 中身: 効果を出している物（カード・エンチャントと、装備自体に効果があるならその装備）。
 	// エンチャントを付けるためだけの装備は中身に入れない（同じエンチャントなら安い装備に絞る）
@@ -102,7 +105,7 @@ export function paretoPrune(list, need, o = {}) {
 		return true;
 	};
 
-	const prog = (v) => { let x = 0; const c = caps.get(v); for (let j = 0; j < c.length; j++) x += c[j] / (need[idx[j]] || 1); return x; };
+	const prog = (v) => { let x = 0; const c = caps.get(v); for (let j = 0; j < c.length; j++) if (need[idx[j]] > 0) x += c[j] / need[idx[j]]; return x; };
 	const sorted = free
 		? list.slice().sort((a, b) => (prog(b) - prog(a)) || (a.price - b.price))
 		: list.slice().sort((a, b) => (a.price - b.price) || ((a.count ?? a.cards?.length ?? 0) - (b.count ?? b.cards?.length ?? 0)));

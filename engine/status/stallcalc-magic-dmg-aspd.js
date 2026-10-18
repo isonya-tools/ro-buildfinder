@@ -62,6 +62,9 @@ import {
     JOB_ID_STARGRADIATOR, JOB_ID_SUMMONER, JOB_ID_WANDERER, JOB_ID_WARLOCK, JOB_ID_WIZARD
 } from "../const/EnumJobId.js";
 import { GetAdditionalAspdPercent } from "./aspd.js";
+
+/** 装備シミュ用: ASPD の内訳（ASPD%を掛ける前の値・ASPD%・固定増加・オーバードブーストで固定されたか） */
+export let bfAspdPre = 0, bfAspdUp = 0, bfAspdPlus = 0, bfAspdFixed = false;
 import { GetRndOptTotalValue } from "../equip/hmrndopt.js";
 import {
     ITEM_ID_AKUMASUHAISHANO_KUTSU, ITEM_ID_ANGELING_SUITS, ITEM_ID_DAISHINKANNO_TEBUKURO, ITEM_ID_DARK_HAND,
@@ -1474,11 +1477,14 @@ export function ApplyMagicalDamageUpAndAspdBase(charaData, n_A_SpeedPOT) {
 			}
 		}
 
+		// 装備シミュ用: ASPD%を掛ける前の値（装備シミュは ASPD を「この値・ASPD%・固定増加」に分けて本来の式で組み立てる）
+		bfAspdPre = aspd;
 		let aspd_up_percent = GetAdditionalAspdPercent();
 		// 拡張表示用にデータを保存
 		CExtraInfoAreaComponentManager.dispDataMap.set(ITEM_SP_ASPD_UP, aspd_up_percent);
 		// ASPD計算
 		aspd += (200 - aspd) * (aspd_up_percent / 100);
+		bfAspdUp = aspd_up_percent;
 
 //================================================================================================================================
 //================================================================================================================================
@@ -1705,6 +1711,8 @@ export function ApplyMagicalDamageUpAndAspdBase(charaData, n_A_SpeedPOT) {
 
 		// ASPD計算
 		aspd += aspdPlusValue;
+		bfAspdPlus = aspdPlusValue;
+		bfAspdFixed = UsedSkillSearch(SKILL_ID_OVERED_BOOST) > 0;
 
 
 		//----------------------------------------------------------------

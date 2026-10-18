@@ -7,6 +7,8 @@
  * 部位の候補から最適な重みを求めておけば、複数の目標が絡んで届かない場合も早く見切れる（双対の考え方）。
  */
 
+import { isAux } from "./bf-fill.js";
+
 /** 部位 j の候補の中で lam·U が一番大きい値（「そのまま」で0以上） */
 function bestValue(list, lam) {
 	let best = 0;
@@ -51,6 +53,8 @@ export function optimizeLambda(regionVariants, need, scale, b, starts, iters = 2
 		let s = 0; for (let k = 0; k < K; k++) s += lam[k];
 		if (!(s > 0)) continue;
 		for (let k = 0; k < K; k++) lam[k] /= s;
+		// ASPD の内訳（条件ではなく持ち回るだけの値）は重みに入れない
+		for (let k = 0; k < K; k++) if (isAux(need, k)) lam[k] = 0;
 		let best = { val: Infinity, lam: Float64Array.from(lam) };
 		let eta = 0.8;
 		for (let it = 0; it < iters; it++) {
@@ -74,7 +78,7 @@ export function optimizeLambda(regionVariants, need, scale, b, starts, iters = 2
 			if (F < -1e-6 * (1 + Math.abs(best.val))) break; // 届かないと証明できた
 			// 目標ごとの尺度で揃えた劣勾配の向きに、重みを下げる（乗法更新）
 			let mx = 0;
-			for (let k = 0; k < K; k++) { const x = Math.abs(g[k]) / scale[k]; if (x > mx) mx = x; }
+			for (let k = 0; k < K; k++) { if (isAux(need, k)) continue; const x = Math.abs(g[k]) / scale[k]; if (x > mx) mx = x; }
 			if (!(mx > 0)) break;
 			let tot = 0;
 			for (let k = 0; k < K; k++) { lam[k] *= Math.exp(-eta * (g[k] / scale[k]) / mx); tot += lam[k]; }

@@ -8,6 +8,17 @@
  * 枠 g: { def, slot }  slot: 部位の枠の番号。同じ def が続く枠は入れ替えても同じなので、候補の番号が小さい順だけを試す
  */
 
+/**
+ * ASPD の内訳の目標（aspdA / aspdP / aspdF）. 条件ではなく、ASPD を本来の式で組み立てるために持ち回る値なので、
+ * 足りない分（need）はとても小さい数にしておく（どの上限の計算でも「足りない」にならない）。重みの最適化からは外す
+ */
+export const AUX_NEED = -1e6;
+export const isAux = (need, k) => need[k] < AUX_NEED / 10;
+/** らとりおの ASPD の式（上限・切り捨ての前）: ASPD%を掛ける前の値 a、ASPD% p、固定増加 f */
+export function aspdOf(a, p, f) { return a + (200 - a) * p / 100 + f; }
+/** a・p・f それぞれの上限からの ASPD の上限（式は a ≤ 200・p ≤ 100 の範囲で a・p・f のどれにも増える） */
+export function aspdUpper(a, p, f) { return aspdOf(Math.min(a, 200), Math.min(p, 100), f); }
+
 /** 目標への近さ（正の伸びだけ、目標ごとに足りない分で頭打ち） */
 export function pPlus(d, need, W) {
 	let p = 0;
@@ -39,14 +50,16 @@ export function finishDef(def, need, W, cardSets = []) {
  * @param {number[]} need  目標ごとの足りない分（頭打ちと重みに使う. 0以下の目標は近さに数えない）
  * @param {object} o  want: 見つける件数の上限, musts: [[from,to],...] その範囲の枠のどれかは必ず変える, cap: 節の数の上限,
  *                    cardSets: [{members, c}] そろうと上乗せがあるカードの組（枠の候補の sets で番号を指す）
+ *                    ax: ASPD を本来の式で確かめるときの準備 { iA, iP, iF, a, p, f（枠より前までの値）, T（目標） }
  * @returns {Array<{pick: number[], used: number, price: number}>}
  */
 export function solveFill(groups, D, need, o = {}) {
-	const { want = 3, musts = [], cap = 3e6, stop = null, cardSets = [], stats = null } = o;
+	const { want = 3, musts = [], cap = 3e6, stop = null, cardSets = [], stats = null, ax = null } = o;
 	const K = D.length, G = groups.length;
 	const W = need.map((x) => (x > 0 ? 1 / x : 0));
 	if (G === 0) {
 		for (let k = 0; k < K; k++) if (D[k] > 1e-9) return [];
+		if (ax && aspdOf(ax.a, ax.p, ax.f) < ax.T - 1e-9) return [];
 		return musts.length ? [] : [{ pick: [], used: 0, price: 0 }];
 	}
 	// 後ろの枠 g.. から c 個の枠を使って足せる量の上限（目標ごと・全体）。これで「あと c 個の枠で届くか」を調べる
@@ -122,6 +135,7 @@ export function solveFill(groups, D, need, o = {}) {
 			let sum = 0; for (let k = 0; k < K; k++) sum += lam[k];
 			if (!(sum > 0)) continue;
 			for (let k = 0; k < K; k++) lam[k] /= sum;
+			for (let k = 0; k < K; k++) if (isAux(need, k)) lam[k] = 0;
 			let eta = 0.8;
 			for (let it = 0; it < 30; it++) {
 				// 枠ごとの最大の候補
@@ -138,7 +152,7 @@ export function solveFill(groups, D, need, o = {}) {
 				for (let k = 0; k < K; k++) gr[k] -= D[k];
 				if (!bestAll || F < bestAll.F) bestAll = { F, lam: Float64Array.from(lam) };
 				if (F < -1e-7) return bestAll;
-				let mx = 0; for (let k = 0; k < K; k++) { const x = Math.abs(gr[k]) / sc[k]; if (x > mx) mx = x; }
+				let mx = 0; for (let k = 0; k < K; k++) { if (isAux(need, k)) continue; const x = Math.abs(gr[k]) / sc[k]; if (x > mx) mx = x; }
 				if (!(mx > 0)) break;
 				let tot = 0;
 				for (let k = 0; k < K; k++) { lam[k] *= Math.exp(-eta * (gr[k] / sc[k]) / mx); tot += lam[k]; }
@@ -182,6 +196,8 @@ export function solveFill(groups, D, need, o = {}) {
 			}
 		}
 		for (let k = 0; k < K; k++) if (tot[k] < D[k] - 1e-9) return false;
+		// ASPD は足し算ではなく本来の式で確かめる
+		if (ax && aspdOf(ax.a + tot[ax.iA], ax.p + tot[ax.iP], ax.f + tot[ax.iF]) < ax.T - 1e-9) return false;
 		return true;
 	};
 	const rec = (g, used, price) => {
@@ -203,6 +219,7 @@ export function solveFill(groups, D, need, o = {}) {
 		let R = 0;
 		for (let k = 0; k < K; k++) if (need[k] > 0) { const df = D[k] - su[k]; if (df > 1e-9) R += (df < need[k] ? df : need[k]) * W[k]; }
 		if (R > 1e-9 && pre(topP[g], r) < R - 1e-9) return;
+		if (ax && aspdUpper(ax.a + su[ax.iA] + pre(tk[ax.iA], r), ax.p + su[ax.iP] + pre(tk[ax.iP], r), ax.f + su[ax.iF] + pre(tk[ax.iF], r)) < ax.T - 1e-9) return;
 		for (let l = 0; l < lamSet.length; l++) { const lam = lamSet[l]; let x = lamD[l]; for (let k = 0; k < K; k++) x -= lam[k] * su[k]; if (x > 1e-9 && pre(lamPre[l][g], r) < x - 1e-9) return; }
 		const gr = groups[g], opts = gr.def.opts;
 		const same = g > 0 && groups[g - 1].def === gr.def;

@@ -2,9 +2,10 @@
  * 装備シミュで条件に使える指標の定義と、計算結果からの読み取り.
  * 値はラトリオの「アイテム情報」欄と同じところから読む。
  */
-import { n_A_Kotei_Cast_Keigen, n_tok_no_limit } from "../../../engine/runtime/ro4-state.js";
+import { n_A_Kotei_Cast_Keigen, n_tok_no_limit, aspdRaw, n_A_BaseLV } from "../../../engine/runtime/ro4-state.js";
 import { n_A_DEX, n_A_INT, n_CastCutForDisp, n_A_BodyZokusei, n_A_Equip, n_A_card } from "../../../engine/runtime/roro-state.js";
 import { bfDelayReductionRaw } from "../../../engine/status/cast-delay.js";
+import { bfAspdPre, bfAspdUp, bfAspdPlus, bfAspdFixed } from "../../../engine/status/stallcalc-magic-dmg-aspd.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
 import { CardObjNew } from "../../../engine/equip/card.dat.js";
 import * as CI from "../../../engine/const/EnumCharaDataIndex.js";
@@ -68,6 +69,15 @@ add("resLong", "遠距離", "その他の耐性", "%", () => n_tok_no_limit[SP.I
 add("resPlayer", "プレイヤー", "その他の耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_PLAYER_ALL]);
 RACE.forEach((n, i) => add("resRace" + i, n, "モンスター耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_RACE_SOLID + i]));
 SIZE.forEach((n, i) => add("resSize" + i, n, "モンスター耐性", "%", () => n_tok_no_limit[SP.ITEM_SP_RESIST_SIZE_SMALL + i]));
+
+// 探索の中だけで使う ASPD の内訳（画面には出さない）。ASPD = 200 - (200 - 前)×(1 - ASPD%/100) + 固定増加（上限 193/190・小数1桁切り捨ての前）
+const hidden = (key, read) => BF_METRICS.push({ key, label: key, group: "内部", unit: "", read, dir: 1, hidden: true });
+hidden("aspdRaw", () => aspdRaw);
+hidden("aspdA", () => bfAspdPre);
+hidden("aspdP", () => bfAspdUp);
+hidden("aspdF", () => bfAspdPlus);
+hidden("aspdFixed", () => (bfAspdFixed ? 1 : 0));
+hidden("aspdCap", () => (n_A_BaseLV >= 100 ? 193 : 190));
 
 export const BF_METRIC_BY_KEY = Object.fromEntries(BF_METRICS.map((m) => [m.key, m]));
 

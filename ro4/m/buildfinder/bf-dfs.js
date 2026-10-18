@@ -5,9 +5,10 @@
  * ctx（部位ごとの候補 LV と、探索の上限の準備）:
  *   n, K, need, W, scaleOf, LV[i][v]（v.d / v.U / v.P / v.price / v.changed / v.groups / v.pkg ...）, cardSets, FILL_WANT,
  *   shieldLocked, baseShield, startTwoHand, topSumP, lossFrom, failMemo（Map. Worker では Worker ごとに持つ）
- *   budget, feas, nL, LU[i][v * nL + l]（重み l での U. 部位ごとに平らに並べた配列）, topL[l][i], lneed[l]
+ *   budget, feas, nL, LU[i][v * nL + l]（重み l での U. 部位ごとに平らに並べた配列）, topL[l][i], lneed[l]（l < K は目標 l だけの重み）
+ *   ax: ASPD を本来の式で確かめるときの準備 { iA, iP, iF, a, p, f（基準の値）, T（目標） }。無ければ null
  */
-import { solveFill } from "./bf-fill.js";
+import { solveFill, aspdUpper } from "./bf-fill.js";
 
 const ordCache = new WeakMap();
 const TRAIL_MAX = 40;
@@ -19,7 +20,7 @@ const TRAIL_MAX = 40;
  * @returns {{leaves: {idx: number[], sols: object[]}[], prefixes: number[][], nodes: number, found: boolean, aborted: boolean}}
  */
 export function dfsRun(ctx, prefix, cut = null, deadline = null) {
-	const { n, K, need, W, scaleOf, LV, LU, cardSets, FILL_WANT, shieldLocked, baseShield, topSumP, lossFrom, budget, feas, nL, topL, lneed } = ctx;
+	const { n, K, need, W, scaleOf, LV, LU, cardSets, FILL_WANT, shieldLocked, baseShield, topSumP, lossFrom, budget, feas, nL, topL, lneed, ax } = ctx;
 	const failMemo = ctx.failMemo || (ctx.failMemo = new Map());
 	// 試す順（変えない物→安い順）は部位ごとに先に決めておく
 	let ordAll = ordCache.get(LV);
@@ -57,6 +58,11 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 		let R = 0;
 		for (let k = 0; k < K; k++) if (need[k] > 0) { const df = need[k] - sumU[k]; if (df > 1e-9) R += (df < need[k] ? df : need[k]) * W[k]; }
 		if (R > 1e-9 && upperP(i, left) < R - 1e-9) return;
+		// ASPD の上限は内訳（ASPD%を掛ける前の値・ASPD%・固定増加）それぞれの上限から本来の式で出す
+		if (ax) {
+			const up = (k, b0) => { const pre = topL[k][i]; return b0 + sumU[k] + pre[left < pre.length ? left : pre.length - 1]; };
+			if (aspdUpper(up(ax.iA, ax.a), up(ax.iP, ax.p), up(ax.iF, ax.f)) < ax.T - 1e-9) return;
+		}
 		if (cut != null && i === cut) { out.prefixes.push(idx.slice()); return; }
 		if (i === n) {
 			if (changes !== budget) return;
@@ -76,7 +82,8 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 			const sig = groups.map((g) => g.def.id).sort((a, b) => a - b).join(",") + "|" + musts.map(([a, b]) => groups.slice(a, b).map((g) => g.def.id).join(".")).join(";");
 			let fails = failMemo.get(sig);
 			if (fails && fails.some((f) => { for (let k = 0; k < K; k++) if (D[k] < f[k] - 1e-9) return false; return true; })) return;
-			const sols = solveFill(groups, D, need, { want: feas ? 1 : FILL_WANT, musts, stop: deadline != null ? expired : null, cardSets });
+			const fax = ax ? { iA: ax.iA, iP: ax.iP, iF: ax.iF, a: ax.a + sum[ax.iA], p: ax.p + sum[ax.iP], f: ax.f + sum[ax.iF], T: ax.T } : null;
+			const sols = solveFill(groups, D, need, { want: feas ? 1 : FILL_WANT, musts, stop: deadline != null ? expired : null, cardSets, ax: fax });
 			if (expired()) { out.aborted = true; return; }
 			if (!sols.length && !sols.capped) {
 				const f = Float64Array.from(D);
@@ -150,7 +157,7 @@ export function packBase(b) {
 	};
 	const LV = b.LV.map((list) => list.map((v) => ({ r: v.region.key, d: arr(v.d), U: arr(v.U), price: v.price, ch: v.changed, th: v.twoHand ? 1 : 0, us: v.usesShield ? 1 : 0, ph: v.pkgHead ? 1 : 0, mf: v.mustFill ? 1 : 0, g: (v.groups || []).map((g) => defOf(g.def)), p: v.pkg ? pkgOf(v.pkg) : -1 })));
 	return JSON.stringify({
-		n: b.n, K: b.K, need: arr(b.need), W: arr(b.W), scaleOf: arr(b.scaleOf), FILL_WANT: b.FILL_WANT, shieldLocked: b.shieldLocked, baseShield: b.baseShield, startTwoHand: b.startTwoHand,
+		n: b.n, K: b.K, ax: b.ax || null, need: arr(b.need), W: arr(b.W), scaleOf: arr(b.scaleOf), FILL_WANT: b.FILL_WANT, shieldLocked: b.shieldLocked, baseShield: b.baseShield, startTwoHand: b.startTwoHand,
 		topSumP: b.topSumP.map(arr), lossFrom: b.lossFrom.map(arr), cardSets: b.cardSets.map((c) => ({ members: arr(c.members), c: arr(c.c) })), LV, defs, pkgs,
 	});
 }
