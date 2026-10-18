@@ -5,7 +5,7 @@
  * ctx（部位ごとの候補 LV と、探索の上限の準備）:
  *   n, K, need, W, scaleOf, LV[i][v]（v.d / v.U / v.P / v.price / v.changed / v.groups / v.pkg ...）, cardSets, FILL_WANT,
  *   shieldLocked, baseShield, startTwoHand, topSumP, lossFrom, failMemo（Map. Worker では Worker ごとに持つ）
- *   budget, feas, nL, LU[i][v]（重みごとの U）, topL[l][i], lneed[l]
+ *   budget, feas, nL, LU[i][v * nL + l]（重み l での U. 部位ごとに平らに並べた配列）, topL[l][i], lneed[l]
  */
 import { solveFill } from "./bf-fill.js";
 
@@ -33,10 +33,10 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 	const add = (i, vi) => {
 		const v = LV[i][vi];
 		if (v.pkgHead) for (const j of v.pkg.regions) if (j > i) req[j] = v.pkg;
-		const lu = LU[i][vi], d = idx.length;
+		const lu = LU[i], lo = vi * nL, d = idx.length;
 		const s0 = SS[d], u0 = SU[d], l0 = SL[d], s2 = SS[d + 1], u2 = SU[d + 1], l2 = SL[d + 1];
 		for (let k = 0; k < K; k++) { s2[k] = s0[k] + v.d[k]; u2[k] = u0[k] + v.U[k]; }
-		for (let l = 0; l < nL; l++) l2[l] = l0[l] + lu[l];
+		for (let l = 0; l < nL; l++) l2[l] = l0[l] + lu[lo + l];
 		if (v.region.key === "weapon") twoHand = v.twoHand;
 		sum = s2; sumU = u2; lsum = l2; changes += v.changed;
 		idx.push(vi); pick.push(v);
@@ -123,4 +123,43 @@ export function dfsTask(ctx, prefix, ms) {
 	const r = dfsRun(ctx, prefix, null, ms ? performance.now() + ms : null);
 	if (!r.aborted) return r;
 	return { nodes: r.nodes, aborted: true, sub: dfsRun(ctx, prefix, prefix.length + 1, null).prefixes, leaves: [], found: false };
+}
+
+// ---- Worker へ渡すための詰め替え ----
+// 構造化複製だと Worker の数だけ画面側で複製の時間がかかる（枠の定義が大量に共有されている）ので、
+// 共有物（枠の定義・セットの束）を表にして1つの文字列にし、Worker ごとの複製は文字列のコピーだけにする。Worker 側で並列に読み戻す
+const arr = (x) => Array.from(x);
+/** 部位ごとの候補と探索の準備（LV など. LU・topL・lneed のような水準ごとのものは含めない）を文字列にする */
+export function packBase(b) {
+	const defs = [], defIdx = new Map(), pkgs = [], pkgIdx = new Map();
+	const defOf = (d) => {
+		let i = defIdx.get(d);
+		if (i === undefined) {
+			i = defs.length; defIdx.set(d, i);
+			defs.push({ id: d.id, mx: arr(d.mx), mp: d.mp, opts: d.opts.map((o) => ({ id: o.id, d: arr(o.d), pot: arr(o.pot), price: o.price, sets: o.sets || [] })) });
+		}
+		return i;
+	};
+	const pkgOf = (k) => {
+		let i = pkgIdx.get(k);
+		if (i === undefined) { i = pkgs.length; pkgIdx.set(k, i); pkgs.push({ regions: arr(k.regions) }); }
+		return i;
+	};
+	const LV = b.LV.map((list) => list.map((v) => ({ r: v.region.key, d: arr(v.d), U: arr(v.U), price: v.price, ch: v.changed, th: v.twoHand ? 1 : 0, us: v.usesShield ? 1 : 0, ph: v.pkgHead ? 1 : 0, mf: v.mustFill ? 1 : 0, g: (v.groups || []).map((g) => defOf(g.def)), p: v.pkg ? pkgOf(v.pkg) : -1 })));
+	return JSON.stringify({
+		n: b.n, K: b.K, need: arr(b.need), W: arr(b.W), scaleOf: arr(b.scaleOf), FILL_WANT: b.FILL_WANT, shieldLocked: b.shieldLocked, baseShield: b.baseShield, startTwoHand: b.startTwoHand,
+		topSumP: b.topSumP.map(arr), lossFrom: b.lossFrom.map(arr), cardSets: b.cardSets.map((c) => ({ members: arr(c.members), c: arr(c.c) })), LV, defs, pkgs,
+	});
+}
+/** packBase の逆 */
+export function unpackBase(str) {
+	const o = JSON.parse(str);
+	const defs = o.defs.map((d) => ({ id: d.id, mx: Float64Array.from(d.mx), mp: d.mp, opts: d.opts }));
+	const pkgs = o.pkgs.map((k) => ({ regions: k.regions }));
+	const regionObj = new Map();
+	const reg = (key) => { let r = regionObj.get(key); if (!r) regionObj.set(key, r = { key }); return r; };
+	o.LV = o.LV.map((list) => list.map((v) => ({ region: reg(v.r), d: v.d, U: v.U, price: v.price, changed: v.ch, twoHand: !!v.th, usesShield: !!v.us, pkgHead: !!v.ph, mustFill: !!v.mf, groups: v.g.map((i) => ({ def: defs[i] })), pkg: v.p >= 0 ? pkgs[v.p] : null })));
+	o.lossFrom = o.lossFrom.map((a) => Float64Array.from(a));
+	delete o.defs; delete o.pkgs;
+	return o;
 }

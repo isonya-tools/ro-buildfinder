@@ -38,7 +38,7 @@ import * as pool from "./bf-pool.js";
 import { paretoPrune, within } from "./bf-prune.js";
 import { pPlus, finishDef, solveFill } from "./bf-fill.js";
 import { topSums, optimizeLambda } from "./bf-bound.js";
-import { dfsTask } from "./bf-dfs.js";
+import { dfsTask, packBase } from "./bf-dfs.js";
 import { w_SE } from "../../../engine/equip/itemset.dat.js";
 
 const IDX_ID = 0, IDX_KIND = 1, IDX_SLOT = 5, IDX_NAME = 8;
@@ -1254,8 +1254,7 @@ export async function search(opt) {
 		const ctx = tasksCtx();
 		const workers = usePool && pool.available();
 		if (workers) {
-			const staticPart = { n, K, need, W, scaleOf, LV, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom };
-			if (poolBase !== LV) { pool.broadcast("dfsBase", staticPart); poolBase = LV; }
+			if (poolBase !== LV) { pool.broadcast("dfsBase", packBase({ n, K, need, W, scaleOf, LV, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom })); poolBase = LV; }
 			pool.broadcast("dfsLevel", { LU: levelLU, budget, feas: feasMode, nL, topL, lneed });
 		}
 		// 仕事の置き場（後ろから取り出す。細かく分けた組は逆順に積んで、元の順に取り出す）
@@ -1334,7 +1333,7 @@ export async function search(opt) {
 		nL = lams.length;
 		topL = lams.map((lam) => topSums(lam, LV));
 		lneed = Float64Array.from(lams, (lam) => { let x = 0; for (let k = 0; k < K; k++) x += lam[k] * need[k]; return x; });
-		levelLU = LV.map((list) => list.map((v) => { const lu = new Float64Array(nL); for (let l = 0; l < nL; l++) { let x = 0; const lam = lams[l]; for (let k = 0; k < K; k++) x += lam[k] * v.U[k]; lu[l] = x; } return lu; }));
+		levelLU = LV.map((list) => { const lu = new Float64Array(list.length * nL); list.forEach((v, vi) => { for (let l = 0; l < nL; l++) { let x = 0; const lam = lams[l]; for (let k = 0; k < K; k++) x += lam[k] * v.U[k]; lu[vi * nL + l] = x; } }); return lu; });
 		return true;
 	};
 	const startTwoHand = weaponLocked ? isTwoHanded(baseWeapon) : false;

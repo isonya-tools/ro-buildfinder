@@ -7,7 +7,7 @@
  *   {id, type: "dfs", model: {prefix, ms}} → {id, v}（途中まで決めた組から先を探した結果. bf-dfs.js）
  */
 
-import { dfsTask } from "./bf-dfs.js";
+import { dfsTask, unpackBase } from "./bf-dfs.js";
 
 // ラトリオの一部のモジュールは読み込み時に画面（document）を触るので、何でも受け付ける空の画面を用意しておく
 const NULLS = new Set(["firstChild", "lastChild", "firstElementChild", "lastElementChild", "nextSibling", "previousSibling", "nextElementSibling", "previousElementSibling", "parentNode", "parentElement", "offsetParent"]);
@@ -80,7 +80,7 @@ const ready = (async () => {
 
 onmessage = async ({ data }) => {
 	// 探索の仕事（計算本体は使わない）
-	if (data.type === "dfsBase") { dbase = { ...data.model, failMemo: new Map() }; return; }
+	if (data.type === "dfsBase") { dbase = { ...unpackBase(data.model), failMemo: new Map() }; return; }
 	if (data.type === "dfsLevel") { dlevel = data.model; return; }
 	if (data.type === "dfs") {
 		try {
