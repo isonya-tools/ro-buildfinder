@@ -41,6 +41,8 @@ function fail() {
 	pending.clear();
 }
 
+/** 前に Worker が止まっていたら、次の検索で作り直せるようにする（止まったままだと、読み込み直すまでずっと1スレッドになる） */
+export function retry() { failed = false; }
 /** Worker で計算できるか */
 export function available() { start(); return !!workers; }
 /** Worker を使わないようにする（結果が画面側の計算と合わないときなど） */

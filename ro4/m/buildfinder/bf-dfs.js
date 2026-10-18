@@ -25,7 +25,8 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 	// 試す順（変えない物→安い順）は部位ごとに先に決めておく
 	let ordAll = ordCache.get(LV);
 	if (!ordAll) ordCache.set(LV, ordAll = LV.map((lv) => lv.map((_, vi) => vi).sort((a, b) => (lv[a].changed ? lv[a].price : -1) - (lv[b].changed ? lv[b].price : -1) || a - b)));
-	const out = { leaves: [], prefixes: [], nodes: 0, found: false, aborted: false, trail: [] };
+	// doneKids: 時間切れまでに調べ終えた prefix の次の部位の候補（その分の leaves は doneLeaves 件目まで）。capped: 枠の当てはめを手数の上限で打ち切った組の数
+	const out = { leaves: [], prefixes: [], nodes: 0, found: false, aborted: false, trail: [], doneKids: [], doneLeaves: 0, doneCapped: 0, capped: 0 };
 	const req = new Array(n).fill(null);
 	const idx = [], pick = [];
 	// 状態は深さごとの配列に持つ（進むときは次の深さに書き込み、戻るときは深さを戻すだけ）
@@ -85,6 +86,7 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 			const fax = ax ? { iA: ax.iA, iP: ax.iP, iF: ax.iF, a: ax.a + sum[ax.iA], p: ax.p + sum[ax.iP], f: ax.f + sum[ax.iF], T: ax.T } : null;
 			const sols = solveFill(groups, D, need, { want: feas ? 1 : FILL_WANT, musts, stop: deadline != null ? expired : null, cardSets, ax: fax });
 			if (expired()) { out.aborted = true; return; }
+			if (sols.capped) out.capped++;
 			if (!sols.length && !sols.capped) {
 				const f = Float64Array.from(D);
 				if (!fails) failMemo.set(sig, fails = []);
@@ -118,6 +120,7 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 			const saveTwo = twoHand, saveCh = changes, d0 = idx.length;
 			add(i, vi);
 			rec(i + 1);
+			if (i === prefix.length && !out.aborted) { out.doneKids.push(vi); out.doneLeaves = out.leaves.length; out.doneCapped = out.capped; }
 			idx.pop(); pick.pop();
 			sum = SS[d0]; sumU = SU[d0]; lsum = SL[d0]; twoHand = saveTwo; changes = saveCh;
 			if (v.pkgHead) for (const j of v.pkg.regions) if (j > i) req[j] = null;
@@ -132,7 +135,11 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 export function dfsTask(ctx, prefix, ms) {
 	const r = dfsRun(ctx, prefix, null, ms ? performance.now() + ms : null);
 	if (!r.aborted) return r;
-	return { nodes: r.nodes, trail: r.trail, aborted: true, sub: dfsRun(ctx, prefix, prefix.length + 1, null).prefixes, leaves: [], found: false };
+	// 調べ終えた候補の分の結果は残し、残りだけを1部位細かく分けて返す
+	const done = new Set(r.doneKids);
+	const sub = dfsRun(ctx, prefix, prefix.length + 1, null).prefixes.filter((p) => !done.has(p[prefix.length]));
+	const leaves = r.leaves.slice(0, r.doneLeaves);
+	return { nodes: r.nodes, trail: r.trail, aborted: true, sub, kept: done.size, leaves, found: leaves.length > 0, capped: r.doneCapped };
 }
 
 // ---- Worker へ渡すための詰め替え ----

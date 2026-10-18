@@ -876,14 +876,27 @@ function laneOf(id) {
 }
 function pushLive(line, lane = -1) {
 	const l = laneOf(lane);
+	// 「考えていること」で同じ種類の行（時刻のあと「:」までが同じ）が続くときは、最新の1行にまとめて回数を付ける（大事な行が押し出されないように）
+	if (lane === -2) {
+		const head = String(line).replace(/^\[[^\]]*\]\s*/, "").split(/[:：]/)[0];
+		if (l.lines.length && head === l.lastHead) {
+			l.rep = (l.rep || 1) + 1;
+			l.lines[l.lines.length - 1] = `${line}（同様の行 ${l.rep}回）`;
+			l.dirty = true;
+			if (!liveTimer) liveTimer = setTimeout(flushLive, 100);
+			return;
+		}
+		l.lastHead = head; l.rep = 1;
+	}
 	l.lines.push(line);
 	if (l.lines.length > (lane === -3 ? 1 : lane === -2 ? 24 : LIVE_LINES)) l.lines.shift();
 	l.dirty = true;
 	if (liveTimer) return;
-	liveTimer = setTimeout(() => {
-		liveTimer = 0;
-		for (const x of lanes.values()) if (x.dirty) { x.dirty = false; x.box.textContent = x.lines.join("\n"); }
-	}, 100);
+	liveTimer = setTimeout(flushLive, 100);
+}
+function flushLive() {
+	liveTimer = 0;
+	for (const x of lanes.values()) if (x.dirty) { x.dirty = false; x.box.textContent = x.lines.join("\n"); }
 }
 function clearLive() {
 	clearTimeout(liveTimer); liveTimer = 0;

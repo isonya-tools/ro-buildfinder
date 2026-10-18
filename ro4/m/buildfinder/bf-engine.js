@@ -579,6 +579,7 @@ export async function search(opt) {
 	// 計算結果の使い回しは、この状態が同じときだけ（キーの頭に付ける）
 	leakKey = JSON.stringify(leak);
 	usePool = false;
+	pool.retry();
 	const baseLocal = evalModel(base);
 	set_n_Enekyori(leak.n_Enekyori);
 	if (pool.available()) {
@@ -593,6 +594,7 @@ export async function search(opt) {
 			// 止めるボタンで取り消されたときは Worker を止めない（次の検索でまた使う）
 			if (e instanceof pool.CancelError || shouldStop()) throw new BfStopped();
 			pool.disable();
+			onActivity(`別スレッド（Worker）で計算できませんでした（${e?.message || e}）。この検索はこの画面のスレッドだけで計算します`, -2);
 		}
 	}
 	if (shouldStop()) throw new BfStopped();
@@ -1286,6 +1288,7 @@ export async function search(opt) {
 		};
 		const capN = workers ? pool.poolSize() * 2 : 1;
 		let active = 0, failed = null, created = 1, finishedTasks = 0, aborts = 0;
+		let cappedN = 0;
 		const lvT0 = performance.now(), nodes0 = nodes;
 		say(`変更${budget}か所の探索を開始（${workers ? `${pool.poolSize()}スレッドで並列` : "この画面のスレッドのみ"}）`);
 		const hb = setInterval(() => {
@@ -1302,15 +1305,16 @@ export async function search(opt) {
 					exec(t).then(async (r) => {
 						nodes += r.nodes; finishedTasks++;
 						showTrail(r);
+						if (r.capped) { cappedN += r.capped; say(`枠の当てはめが手数の上限（${(3e6).toLocaleString()}手）に達して打ち切った装備の組があります（累計 ${cappedN}組）。この組は結果に入っていない可能性があります`); }
 						if (r.aborted) {
+							// 時間切れ: 調べ終えた候補の分（kept）は結果を使い、残りを細かく分けて積み直す
 							aborts++; created += r.sub.length;
-							for (let q = r.sub.length - 1; q >= 0; q--) taskQ.push({ prefix: r.sub[q], w: t.w / r.sub.length });
-							if (!r.sub.length) doneW += t.w;
-						} else {
-							doneW += t.w;
-							if (r.found) feasFound = true;
-							for (const lf of r.leaves) for (const sol of lf.sols) queue.push(buildPicks(lf.idx, sol));
-						}
+							const parts = r.sub.length + (r.kept || 0);
+							for (let q = r.sub.length - 1; q >= 0; q--) taskQ.push({ prefix: r.sub[q], w: t.w / parts });
+							doneW += parts ? t.w * (r.kept || 0) / parts : t.w;
+						} else doneW += t.w;
+						if (r.found) feasFound = true;
+						for (const lf of r.leaves) for (const sol of lf.sols) queue.push(buildPicks(lf.idx, sol));
 						if (queue.length >= CONC) await flush();
 						if (performance.now() - lastProg > 200) onProgress(results.length ? `組み合わせを探しています（${results.length}件）` : "組み合わせを探しています", Math.min(0.95, (budget + Math.min(1, doneW)) / (n + 1)));
 						if (performance.now() - lastProg > 200) lastProg = performance.now();
