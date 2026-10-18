@@ -422,6 +422,21 @@ const enchDetailCache = new Map();
 let official = null;
 const normName = (s) => String(s).normalize("NFKC").replace(/\[\d+\]$/, "").replace(/\(最大\d+個\)/g, "").replace(/[<>＜＞\s]/g, "").toLowerCase();
 const PLAIN_STAT = /^(atk|matk|sp|maxsp|hp|maxhp|str|agi|vit|int|dex|luk|cri|flee|hit|def|mdef|aspd|詠唱時間|special)/;
+/**
+ * 除外リスト（bf-exclude.json、スプレッドシートのチェックから tools-bf-exclude.mjs で作成）。
+ * もう使わない弱い装備・カード・エンチャントで、検索の候補に最初から入れない
+ */
+let exclude = null;
+async function loadExclude() {
+	if (exclude) return;
+	try {
+		const res = await fetch(new URL("./bf-exclude.json", import.meta.url));
+		const j = res.ok ? await res.json() : null;
+		if (j) exclude = { items: new Set(j.items), cards: new Set(j.cards) };
+	} catch { /* 読めなければ除外なし */ }
+	if (!exclude) exclude = { items: new Set(), cards: new Set() };
+}
+
 export async function loadOfficial() {
 	if (official) return;
 	try {
@@ -555,7 +570,7 @@ export function isTwoHanded(itemId) {
  */
 export async function search(opt) {
 	const { conds, skillLv = {}, lock = {}, ngItems = [], ngCards = [], maxResults = 30, onProgress: report = () => {}, onActivity = () => {}, onResults = () => {}, shouldStop = () => false, priceOf = () => null } = opt;
-	await Promise.all([loadHard(), loadOfficial()]);
+	await Promise.all([loadHard(), loadOfficial(), loadExclude()]);
 	// 読み込み中に止められていたら、ここで終える（共有の状態を書き換えない）
 	if (shouldStop()) throw new BfStopped();
 	// 全体の進み具合: 候補の確認 0〜75%、組み合わせ探し（見つけたものはその場で実計算して確かめる）75〜100%
@@ -567,6 +582,15 @@ export async function search(opt) {
 	const jobId = base.status.jobId;
 	const ngItemSet = new Set(ngItems.map(Number));
 	const ngCardSet = new Set(ngCards.map(Number));
+	// 除外リストの物は候補にしない。ただし今の構成で装備しているもの（自分で付けたもの）はそのまま使う
+	{
+		const wornItems = new Set(BF_REGIONS.map((r) => regionItem(base, r)));
+		const wornCards = new Set(base.card);
+		let ni = 0, nc = 0;
+		for (const id of exclude.items) if (!wornItems.has(id) && !ngItemSet.has(id)) { ngItemSet.add(id); ni++; }
+		for (const id of exclude.cards) if (!wornCards.has(id) && !ngCardSet.has(id)) { ngCardSet.add(id); nc++; }
+		if (ni || nc) onActivity(`除外リストの装備 ${ni} 件・カードとエンチャント ${nc} 件は候補にしません（今付けている物は除く）`, -2);
+	}
 
 	let keys = conds.map((c) => c.key);
 	const skills = [...new Set(keys.filter((k) => k.startsWith("sk:")).map((k) => Number(k.split(":")[1])))].map((id) => ({ id, lv: skillLv[id] || 1 }));
