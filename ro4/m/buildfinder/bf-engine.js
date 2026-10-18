@@ -584,8 +584,10 @@ export async function search(opt) {
 		pool.setState(leak);
 		try {
 			const v = await pool.run("core", base);
-			usePool = Object.keys(baseLocal).every((k) => Math.abs((v[k] ?? 0) - baseLocal[k]) < 1e-6);
-			if (!usePool) pool.disable();
+			const diff = Object.keys(baseLocal).filter((k) => !(Math.abs((v[k] ?? 0) - baseLocal[k]) < 1e-6));
+			usePool = !diff.length;
+			// 計算が画面側と合わないときは、指標の計算だけ画面のスレッドで行う（組み合わせの探索は計算本体を使わないので、Worker のまま並列にできる）
+			if (!usePool) onActivity(`Worker の計算結果が画面側と合いません（${diff.slice(0, 6).map((k) => `${k}: 画面 ${baseLocal[k]} / Worker ${v[k]}`).join("、")}）。指標の計算は画面のスレッドで行います`, -2);
 		} catch (e) {
 			// 止めるボタンで取り消されたときは Worker を止めない（次の検索でまた使う）
 			if (e instanceof pool.CancelError || shouldStop()) throw new BfStopped();
@@ -1258,7 +1260,7 @@ export async function search(opt) {
 	let levelLU = [];
 	const searchLevel = async () => {
 		const ctx = tasksCtx();
-		const workers = usePool && pool.available();
+		const workers = pool.available();
 		if (workers) {
 			if (poolBase !== LV) { pool.broadcast("dfsBase", packBase({ n, K, need, W, scaleOf, LV, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom })); poolBase = LV; }
 			pool.broadcast("dfsLevel", { trail: true, LU: levelLU, budget, feas: feasMode, nL, topL, lneed });
