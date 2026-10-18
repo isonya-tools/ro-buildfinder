@@ -279,7 +279,8 @@ function cachedAsync(map, key, type, model, local) {
 			usePool = false;
 			return done(local());
 		});
-	} else p = Promise.resolve().then(() => done(local()));
+	// この画面のスレッドで計算するときは、1回ごとに画面へ順番を返す（続けて計算すると、その間ずっと画面が止まる）
+	} else p = new Promise((res) => setTimeout(res, 0)).then(() => done(local()));
 	inflight.set(fk, p);
 	return p;
 }
@@ -1243,8 +1244,6 @@ export async function search(opt) {
 	};
 
 	// ---- 深さ優先の総当たり（枝刈りつき）----
-	const pick = [];
-	const req = new Array(n).fill(null); // セットで決まっている部位
 	let nodes = 0;
 	let budget = 0;
 	const FILL_WANT = 3;
@@ -1388,7 +1387,6 @@ export async function search(opt) {
 	feasMode = true;
 	let firstBudget = n + 1;
 	for (budget = 0; budget <= n; budget++) {
-		const lt0 = performance.now(), ln0 = nodes;
 		const okLevel = setupLevel(budget);
 		if (!okLevel) continue;
 		feasFound = false;
@@ -1403,7 +1401,6 @@ export async function search(opt) {
 	prepLists(regionVariants);
 	say(`次に、全部の候補（${regionVariants.map((l) => l.length).join("/")}件）で、変更${firstBudget}か所から値段・カードの少なさの順に探します`);
 	for (budget = firstBudget; budget <= n; budget++) {
-		const lt0 = performance.now(), ln0 = nodes;
 		const okLevel = setupLevel(budget);
 		if (!okLevel) continue;
 		await searchLevel();
