@@ -57,7 +57,12 @@ export function run(type, model) {
 	w.busy++;
 	return new Promise((resolve, reject) => {
 		pending.set(id, { resolve, reject, w });
-		w.postMessage({ id, type, model, st });
+		try { w.postMessage({ id, type, model, st }); } catch (e) {
+			// 渡せないデータだったときは、待ちの記録を残さない
+			pending.delete(id);
+			w.busy--;
+			reject(e);
+		}
 	});
 }
 

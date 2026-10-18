@@ -176,3 +176,16 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT details.bf-acc > summary h3::before { content: "▶ "; font-size: 12px; }
 #BF_ROOT details.bf-acc[open] > summary h3::before { content: "▼ "; }
 #BF_ROOT details.bf-acc[open] > summary { margin-bottom: 8px; }
+/* プルダウンの候補は左寄せ（表のセルの右寄せを引き継がない） */
+#BF_ROOT .ts-dropdown .option, #BF_ROOT .bf-cardtable td:first-child { text-align: left; }
+/* 狭い画面: エンチャント・カード・発動バフ・固定装備の表は枠の中で横にスクロールする */
+#BF_ROOT .bf-enchgroup, #BF_ROOT .bf-buffgroup { max-width: 100%; overflow-x: auto; box-sizing: border-box; }
+#BF_ROOT .bf-regions { display: block; max-width: 100%; overflow-x: auto; }
+#BF_ROOT .bf-regions td, #BF_ROOT .bf-regions th { white-space: nowrap; }
+@media (max-width: 600px) {
+	#BF_ROOT .bf-cardtable .ts-wrapper, #BF_ROOT .bf-cardsel { min-width: 200px; }
+}
+#BF_ROOT .bf-enchrows > div { min-width: 0; max-width: 100%; }
+@media (max-width: 600px) {
+	#BF_ROOT .bf-ngsel .ts-wrapper { min-width: 0; width: 100%; }
+}

@@ -78,10 +78,10 @@ onmessage = async ({ data }) => {
 	const { id, type, model, st } = data;
 	if (err) { postMessage({ id, err }); return; }
 	try {
-		// 支援欄の開閉（開いている欄の設定だけ計算に入る）などは毎回画面側に合わせる
-		for (const [k, v] of Object.entries(st || {})) setters[k]?.(v);
 		// 最初の1回は戦闘計算まで通して、前回の計算の値を引き継ぐ内部状態（特性ステータス等）を埋めておく
 		if (!warm) { full(model); core(model); warm = true; }
+		// 支援欄の開閉（開いている欄の設定だけ計算に入る）などは毎回画面側に合わせる（戦闘計算で書き換わる遠距離かどうかも戻す）
+		for (const [k, v] of Object.entries(st || {})) setters[k]?.(v);
 		if (type === "skill") {
 			const r = full(model)?.activeResultArray?.[0];
 			postMessage({ id, t: { cf: Math.round((r?.castFixed || 0) * 1000), ct: Math.round((r?.coolTime || 0) * 1000) } });

@@ -234,7 +234,8 @@ export async function initBuildFinder(container) {
 	refreshAll();
 	let timer = 0;
 	document.addEventListener("change", (e) => {
-		if (root.contains(e.target)) return;
+		// シミュの欄の操作（作り直しで外れた部品も含む）では、らとりお側の作り直しはしない
+		if (!e.target.isConnected || root.contains(e.target)) return;
 		clearTimeout(timer);
 		timer = setTimeout(refreshAll, 400);
 	});
@@ -335,7 +336,7 @@ function metricGroupsTable(val, opts = {}) {
 				const t = conf.targets[m.key];
 				const met = t != null && (m.kind === "elm" ? val[m.key] === t : val[m.key] >= t);
 				const changed = before && before[m.key] !== val[m.key];
-				return h("tr", { class: (t != null ? (met ? "bf-met" : "bf-unmet") : "") + (changed ? " bf-changed" : "") },
+				return h("tr", { class: (t != null ? (met ? "bf-met" : "bf-unmet") : "") + (changed ? " bf-changed" : ""), "data-key": withTarget ? m.key : null },
 					h("th", {}, m.label),
 					before ? h("td", { class: "bf-cur bf-before" }, fmtMetric(m, before[m.key])) : null,
 					h("td", { class: val[m.key] ? "bf-cur" : "bf-cur bf-zero" }, fmtMetric(m, val[m.key])),
@@ -347,24 +348,37 @@ function metricGroupsTable(val, opts = {}) {
 function targetInput(m) {
 	const set = (v) => {
 		if (v == null) delete conf.targets[m.key]; else conf.targets[m.key] = v;
-		saveConf(); renderState(lastModel);
+		// 表を作り直すと、次に押した入力欄が消えて打った文字が入らないので、達成・未達成の色だけ付け直す
+		saveConf(); markTargets();
 	};
 	if (m.kind === "elm") {
 		const t = conf.targets[m.key];
 		const sel = h("select", { class: "bf-target", onchange: () => set(sel.value === "" ? null : Number(sel.value)) },
 			h("option", { value: "" }, "-"), ELM_NAMES.map((n, i) => h("option", { value: i, selected: t === i }, n)));
-		return h("span", { class: "bf-numwrap" }, sel, h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => set(null) }, "✕"));
+		return h("span", { class: "bf-numwrap" }, sel, h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => { sel.value = ""; set(null); } }, "✕"));
 	}
 	if (m.kind === "bool") {
 		const t = conf.targets[m.key];
 		const sel = h("select", { class: "bf-target", onchange: () => set(sel.value === "" ? null : 1) },
 			h("option", { value: "" }, "-"), h("option", { value: "1", selected: t === 1 }, "あり"));
-		return h("span", { class: "bf-numwrap" }, sel, h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => set(null) }, "✕"));
+		return h("span", { class: "bf-numwrap" }, sel, h("button", { type: "button", class: "bf-clear", title: "消す", onclick: () => { sel.value = ""; set(null); } }, "✕"));
 	}
 	return numInput(conf.targets[m.key], set);
 }
 function renderState(model) {
 	stateBox.replaceChildren(metricGroupsTable(evalModel(model), { withTarget: true }));
+}
+/** 目標の達成・未達成の色だけ付け直す（表は作り直さない） */
+function markTargets() {
+	if (!lastModel) return;
+	const val = evalModel(lastModel);
+	for (const tr of stateBox.querySelectorAll("tr[data-key]")) {
+		const m = BF_METRICS.find((x) => x.key === tr.dataset.key);
+		const t = conf.targets[m.key];
+		const met = t != null && (m.kind === "elm" ? val[m.key] === t : val[m.key] >= t);
+		tr.classList.toggle("bf-met", t != null && met);
+		tr.classList.toggle("bf-unmet", t != null && !met);
+	}
 }
 
 // ---- エンチャント・カードの目標（プルダウンで選んで個数を入れる。今付いているものは最初から一覧に入れる） ----
@@ -417,6 +431,8 @@ function goalRow(kind, row, i, counts) {
 			onChange: (v) => {
 				const id = Number(v) || 0;
 				if (!id) return;
+				// 一覧に既にあるものは足さない（同じ目標が2つにならないように）
+				if (conf[g.rows].some(([c], j) => c === id && j !== i)) { setTimeout(() => renderGoals(lastModel, kind), 0); return; }
 				if (cid) conf[g.rows][i][0] = id; else conf[g.rows].push([id, null]);
 				conf[g.removed] = conf[g.removed].filter((x) => x !== id);
 				saveConf();
@@ -602,7 +618,11 @@ function buildNg() {
 	queueMicrotask(() => {
 		if (!window.TomSelect) return;
 		const ts = new window.TomSelect(sel, {
-			options: [...itemNames().map(([id, n]) => ({ value: "i" + id, text: n })), ...cardNames().map(([id, n]) => ({ value: "c" + id, text: n }))],
+			// ひらがな・カタカナを同じに扱う（カード・エンチャントは読みでも引ける）
+			options: [...itemNames().map(([id, n]) => ({ value: "i" + id, text: n, n: searchNorm(n), y: "" })),
+				...cardNames().map(([id, n]) => ({ value: "c" + id, text: n, n: searchNorm(n), y: readingOf(id) }))],
+			searchField: ["text"],
+			score: kanaSelectOptions([]).score,
 			maxOptions: 200, placeholder: "除外する装備・カード・エンチャントの名前を入力", allowEmptyOption: true,
 			onChange: (v) => {
 				if (!v) return;
@@ -671,6 +691,8 @@ async function runSearch() {
 	const { conds, skillLv } = buildConds();
 	if (!conds.length) { progressBox.textContent = "目標を1つ以上入れてください。"; return; }
 	running = true;
+	// 検索中は固定装備を変えられない（外すボタンを押せないようにする）
+	for (const b of regionBox.querySelectorAll("button.bf-lock")) b.disabled = true;
 	// 止めるボタンは押したその場で画面を戻す（検索の後始末は裏で終わらせ、結果は捨てる）
 	const token = { stop: false };
 	curToken = token;
@@ -708,6 +730,7 @@ async function runSearch() {
 }
 function endSearch() {
 	running = false; searchBtn.disabled = false; stopBtn.disabled = true;
+	for (const b of regionBox.querySelectorAll("button.bf-lock")) b.disabled = false;
 	progressBar.hidden = true;
 	curToken = null;
 	thawScreen();
