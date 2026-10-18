@@ -875,7 +875,8 @@ export async function search(opt) {
 		// セットのメンバーは、他に負けていても残す（そろうと上乗せがある）
 		const have = new Set(kept.map((v) => v.id));
 		for (const v of cand) if (memberCard.has(v.id) && !have.has(v.id)) kept.push(v);
-		kept.sort((a, b) => a.price - b.price);
+		// 新しいもの（IDの大きい順）から試す（ユーザー指定。打ち切りで落ちるのは古い物になる）
+		kept.sort((a, b) => b.id - a.id || a.price - b.price);
 		def = finishDef({ id: defCache.size, opts: [{ id: 0, d: zero(), price: 0, cnt: 0, sets: [] }, ...kept.map((v) => ({ id: v.id, d: v.d, price: v.price, cnt: 1, sets: carriedBy.get(v.id) || [] }))] }, need, W, cardSets);
 		defCache.set(key, def);
 		return def;
