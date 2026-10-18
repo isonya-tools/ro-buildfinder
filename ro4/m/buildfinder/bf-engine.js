@@ -25,7 +25,8 @@ import * as K from "../../../engine/const/EnumItemKind.js";
 import * as CK from "../../../engine/const/EnumCardKind.js";
 import * as CR from "../../../engine/runtime/common.js";
 import { readMetrics } from "./bf-metrics.js";
-import { loadHard, makeRelevance, relevantItemSets, isHardItem } from "./bf-relevance.js";
+import { loadHard, makeRelevance, relevantItemSets, isHardItem, isHardCard, inSameSet } from "./bf-relevance.js";
+import { CARD_DATA_INDEX_SPBEGIN } from "../../../engine/const/EnumCardDataIndex.js";
 import * as NE from "../../../engine/equip/item.dat.js";
 import { n_Enekyori, set_n_Enekyori } from "../../../engine/runtime/ro4-state.js";
 import { n_Skill1SW } from "../../../engine/ui/BuffJobSpecificSelf.js";
@@ -147,6 +148,28 @@ function clearRegion(m, r) {
 	for (const s of r.slots) if (s >= 0) m.card[s] = 0;
 }
 
+/**
+ * 付ける装備・精錬値で効果が変わるかもしれないカード・エンチャントか
+ * （計算処理がIDを直接見ている・効果に精錬値の条件がある（+1以上のとき）・その装備と同じセット効果のメンバー）
+ */
+const refineCondMemo = new Map();
+function hasRefineCond(cid) {
+	let v = refineCondMemo.get(cid);
+	if (v !== undefined) return v;
+	v = false;
+	const d = CardObjNew[cid];
+	for (let i = 0; !v && d && d[CARD_DATA_INDEX_SPBEGIN + i] != 0 && d[CARD_DATA_INDEX_SPBEGIN + i] != null; i += 2) {
+		// ＳＰ定義の 10万の位〜1000万の位が精錬値の条件（精錬値が上がる度・精錬値以上）
+		const raw = d[CARD_DATA_INDEX_SPBEGIN + i];
+		const low = typeof raw === "bigint" ? Number(raw % 100000000n) : raw % 100000000;
+		if (low >= 100000) v = true;
+	}
+	refineCondMemo.set(cid, v);
+	return v;
+}
+export function hostDependent(cid, iid, lv) {
+	return isHardCard(cid) || (lv > 0 && hasRefineCond(cid)) || inSameSet("c" + cid, "i" + iid);
+}
 export function itemName(id) { return ItemObjNew[id]?.[IDX_NAME] ?? ""; }
 export function cardName(id) { return CardObjNew[id]?.[CIDX_NAME] ?? ""; }
 export function itemSlotCount(id) { return GetMaxSlot(ItemObjNew[id]?.[IDX_SLOT] ?? 0); }
@@ -607,8 +630,8 @@ export async function search(opt) {
 		for (let s = 0; s < 4; s++) {
 			if (ctx.r.slots[s] == null || ctx.r.slots[s] < 0 || kept.has(ctx.r.slots[s])) { out.push([]); continue; }
 			if (s < nSlot) { out.push(ctx.cardOpts); continue; }
-			const ds = await pmap(ench[s] || [], async (cid) => { await tick(); return ctx.slotDelta(s, cid); }, CONC);
-			out.push((ench[s] || []).map((cid, j) => ({ id: cid, d: ds[j] })).filter((o) => relevant(o.d)));
+			const ds = await pmap(ench[s] || [], async (cid) => { await tick(); return ctx.hostDelta(iid, lv, s, cid); }, CONC);
+			out.push((ench[s] || []).map((cid, j) => ({ id: cid, d: ds[j] })).filter((o) => ctx.relevant(o.d)));
 		}
 		return out;
 	};
@@ -624,6 +647,12 @@ export async function search(opt) {
 		clearRegion(cleared, r);
 		const clearedVal = await evalM(cleared);
 		const clearedD = vecFrom(clearedVal, baseVal);
+		// この部位の候補は「部位を空にした状態」から見た足りない分で選ぶ。
+		// 今の装備（または外した部位に残ったカード・エンチャ）で満たしている目標は、入れ替えると失うので、取り戻す物も候補に残す
+		const needR = conds.map((c, i) => (need[i] > 0 || c.target - clearedVal[c.key] > 1e-9) ? Math.max(c.target - clearedVal[c.key], 1e-6) : 0);
+		const relevantR = (d) => d.some((x, i) => x > 1e-9 && needR[i] > 0);
+		const toR = (d) => d.map((x, i) => x - clearedD[i]);
+		const fromR = (list) => { for (const v of list) v.d = v.d.map((x, i) => x + clearedD[i]); return list; };
 		const cardDelta = new Map();
 		const slotDelta = (s, cid) => {
 			// 効果はどの枠に挿しても同じなので、エンチャント・カードごとに1回だけ計算する
@@ -636,10 +665,35 @@ export async function search(opt) {
 			return cardDelta.get(key);
 		};
 
+		// エンチャントは付ける装備・精錬値で効果が変わる（例: 英雄の凱歌はヴァルキリーカースブライト+10でASPDが大きく上がる）ので、
+		// 差分はその装備をその精錬値で付けた状態を基準に取る
+		const hostCache = new Map();
+		const hostDelta = (iid, lv, s, cid) => {
+			// 装備によって効果が変わらないエンチャントは、空の部位での差分を使い回す（計算を減らす）
+			if (!hostDependent(cid, iid, lv)) return slotDelta(s, cid);
+			const hk = iid + ":" + lv;
+			let h = hostCache.get(hk);
+			if (!h) {
+				const m = cloneModel(cleared);
+				place(m, r, iid, lv);
+				h = { m, val: evalM(m) };
+				hostCache.set(hk, h);
+			}
+			const key = hk + ":" + cid;
+			if (!cardDelta.has(key)) {
+				cardDelta.set(key, h.val.then(async (hv) => {
+					const m = cloneModel(h.m);
+					m.card[r.slots[s]] = cid;
+					return vecFrom(await evalM(m, skRef(relSk?.card(cid), hv)), hv);
+				}));
+			}
+			return cardDelta.get(key);
+		};
+
 		// カード候補（差分は空の部位に入れたときのもの。カード枠どこに挿しても同じとみなす）
 		const cardDs = await pmap(regionCards[ri], async (cid) => { await tick(); done++; return slotDelta(0, cid); }, CONC);
-		const cardOpts = regionCards[ri].map((cid, j) => ({ id: cid, d: cardDs[j] })).filter((o) => relevant(o.d));
-		const ctx = { r, cardOpts, slotDelta, keepVariants: [] };
+		const cardOpts = regionCards[ri].map((cid, j) => ({ id: cid, d: cardDs[j] })).filter((o) => relevantR(o.d));
+		const ctx = { r, cardOpts, slotDelta, hostDelta, relevant: relevantR, keepVariants: [] };
 
 		const variants = [];
 		const twoHand0 = r.key === "weapon" && isTwoHanded(curItem);
@@ -672,11 +726,11 @@ export async function search(opt) {
 						m.card[r.slots[s]] = cid;
 						return vecFrom(await evalM(m, skRef(relSk?.card(cid), baseVal)), baseVal);
 					}, CONC);
-					list.forEach((cid, j) => { if (relevant(ds[j])) opts.push({ id: cid, d: ds[j] }); });
+					list.forEach((cid, j) => { if (relevantR(ds[j])) opts.push({ id: cid, d: ds[j] }); });
 				}
 				slotChoices.push(opts);
 			}
-			for (const v of expandSlots(r, zero(), slotChoices, priceOf, need, 0)) {
+			for (const v of fromR(expandSlots(r, toR(zero()), slotChoices, priceOf, needR, 0))) {
 				if (!v.cards.length) continue;
 				variants.push({ region: r, keep: true, itemId: curItem, cards: v.cards, d: v.d, price: v.price, count: v.cards.length, changed: 1, twoHand: twoHand0, usesShield: variants[0].usesShield });
 			}
@@ -710,17 +764,19 @@ export async function search(opt) {
 				const nEnch = slotChoices.reduce((a, o) => a + o.length, 0);
 				if (prevD && nEnch === prevEnch && d.every((x, i) => Math.abs(x - prevD[i]) < 1e-9)) continue;
 				prevD = d; prevEnch = nEnch;
-				if (!relevant(d) && !slotChoices.some((o) => o.length)) continue;
+				if (!relevantR(toR(d)) && !slotChoices.some((o) => o.length)) continue;
 				// 同じ性能なら精錬値の低い方が残るように、精錬値ぶんだけ値段を重くして比べる
 				const itemPrice = (priceOf("item", iid) ?? UNKNOWN_PRICE) + lv;
-				for (const v of expandSlots(r, d, slotChoices, priceOf, need, itemPrice)) {
+				for (const v of fromR(expandSlots(r, toR(d), slotChoices, priceOf, needR, itemPrice))) {
 					variants.push({ region: r, keep: false, itemId: iid, refine: lv, selfRel, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1, twoHand: r.key === "weapon" && isTwoHanded(iid), usesShield: r.key === "shield" });
 				}
 			}
 			return variants;
 		}, CONC);
 		for (const list of perItem) for (const v of list) variants.push(v);
-		regionVariants.push(trimVariants(paretoPrune(variants, need), need, 300));
+		for (const v of variants) v.d = toR(v.d);
+		regionVariants.push(trimVariants(paretoPrune(variants, needR), needR, 300));
+		fromR(variants);
 		regionCtx.push(ctx);
 	}
 

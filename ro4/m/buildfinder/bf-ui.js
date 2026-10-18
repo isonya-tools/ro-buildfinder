@@ -565,27 +565,25 @@ function skillTipContent(name, info) {
 const FIXED_COLS = [["refine", "精錬値"], ["item", "装備"], ["card", "カード"], ["ench", "エンチャント"]];
 function renderRegions(model) {
 	regionBox.replaceChildren(h("tr", {}, h("th", {}, "部位"), FIXED_COLS.map(([, label]) => h("th", {}, label))));
-	let any = false;
 	for (const r of BF_REGIONS) {
 		if (r.shadow) continue;
 		const cur = regionItem(model, r);
-		if (!cur || isRegionEmpty(model, r)) continue;
-		any = true;
-		const nSlot = itemSlotCount(cur);
+		// 何も付けていない部位も行は残し、「-」を出す（外すボタンは出さない）
+		const empty = !cur || isRegionEmpty(model, r);
+		const nSlot = empty ? 0 : itemSlotCount(cur);
 		const ids = r.slots.map((s) => model?.card?.[s] || 0);
 		const names = (list) => list.filter((c) => c > 0).map(cardName).join(" / ") || "-";
 		const text = {
-			item: itemName(cur),
-			refine: r.refine ? "+" + (regionRefine(model, r) ?? 0) : "-",
-			card: names(ids.slice(0, nSlot)),
-			ench: names(ids.slice(nSlot)),
+			item: empty ? "-" : itemName(cur),
+			refine: r.refine && !empty ? "+" + (regionRefine(model, r) ?? 0) : "-",
+			card: empty ? "-" : names(ids.slice(0, nSlot)),
+			ench: empty ? "-" : names(ids.slice(nSlot)),
 		};
-		const btn = h("button", { type: "button", class: "bf-lock", disabled: running, onclick: () => removeRegion(r) }, "外す");
+		const btn = empty ? null : h("button", { type: "button", class: "bf-lock", disabled: running, onclick: () => removeRegion(r) }, "外す");
 		regionBox.append(h("tr", {},
 			h("td", { class: "bf-lockcell" }, btn, h("span", { class: "bf-lockval" }, r.label)),
-			FIXED_COLS.map(([part]) => h("td", { class: part === "refine" && !r.refine ? "bf-dim" : "" }, text[part]))));
+			FIXED_COLS.map(([part]) => h("td", { class: text[part] === "-" ? "bf-dim" : "" }, text[part]))));
 	}
-	if (!any) regionBox.append(h("tr", {}, h("td", { colspan: 5, class: "bf-zero" }, "なし")));
 }
 /** 部位の装備を画面からも外す */
 function removeRegion(r) {

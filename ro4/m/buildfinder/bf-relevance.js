@@ -171,6 +171,20 @@ export function relevantItemSets(rel) {
 	return out;
 }
 
+/** セット効果のメンバーか（key: "i<装備ID>" / "c<カードID>"） */
+export function inAnySet(key) { return setMembers().has(key); }
+/** 2つのメンバーが同じセットに入っているか */
+export function inSameSet(a, b) {
+	const x = setMembers().get(a), y = setMembers().get(b);
+	return !!(x && y && x.some((r) => y.includes(r)));
+}
+/** 計算処理の中でIDを直接見ているカード・エンチャントか */
+export function isHardCard(id) {
+	if (!hard) return false;
+	for (const c of Object.values(hard)) if (c.cards?.has(id)) return true;
+	for (const c of Object.values(hardProbe || {})) if (c.cards?.has(id)) return true;
+	return false;
+}
 /** 計算処理の中でIDを直接見ている装備か（精錬値で効果が変わるかもしれないもの） */
 export function isHardItem(id) {
 	if (!hard) return false;
