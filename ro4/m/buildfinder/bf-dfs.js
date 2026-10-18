@@ -22,9 +22,11 @@ const TRAIL_MAX = 40;
 export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 	const { n, K, need, W, scaleOf, LV, LU, cardSets, FILL_WANT, shieldLocked, baseShield, topSumP, lossFrom, budget, feas, nL, topL, lneed, ax } = ctx;
 	const failMemo = ctx.failMemo || (ctx.failMemo = new Map());
-	// 試す順（変えない物→安い順）は部位ごとに先に決めておく
+	// 試す順（変えない物→新しい装備（IDの大きい順）→安い順）は部位ごとに先に決めておく。
+	// 時間切れで打ち切るときに落ちるのが古い装備になるように（ユーザー指定）
 	let ordAll = ordCache.get(LV);
-	if (!ordAll) ordCache.set(LV, ordAll = LV.map((lv) => lv.map((_, vi) => vi).sort((a, b) => (lv[a].changed ? lv[a].price : -1) - (lv[b].changed ? lv[b].price : -1) || a - b)));
+	const rank = (v) => (v.changed ? -(v.itemId || 0) : -Infinity);
+	if (!ordAll) ordCache.set(LV, ordAll = LV.map((lv) => lv.map((_, vi) => vi).sort((a, b) => rank(lv[a]) - rank(lv[b]) || (lv[a].changed ? lv[a].price : -1) - (lv[b].changed ? lv[b].price : -1) || a - b)));
 	// doneKids: 時間切れまでに調べ終えた prefix の次の部位の候補（その分の leaves は doneLeaves 件目まで）。capped: 枠の当てはめを手数の上限で打ち切った組の数
 	const out = { leaves: [], prefixes: [], nodes: 0, found: false, aborted: false, trail: [], doneKids: [], doneLeaves: 0, doneCapped: 0, capped: 0 };
 	const req = new Array(n).fill(null);
@@ -162,7 +164,7 @@ export function packBase(b) {
 		if (i === undefined) { i = pkgs.length; pkgIdx.set(k, i); pkgs.push({ regions: arr(k.regions) }); }
 		return i;
 	};
-	const LV = b.LV.map((list) => list.map((v) => ({ r: v.region.key, d: arr(v.d), U: arr(v.U), price: v.price, ch: v.changed, th: v.twoHand ? 1 : 0, us: v.usesShield ? 1 : 0, ph: v.pkgHead ? 1 : 0, mf: v.mustFill ? 1 : 0, g: (v.groups || []).map((g) => defOf(g.def)), p: v.pkg ? pkgOf(v.pkg) : -1 })));
+	const LV = b.LV.map((list) => list.map((v) => ({ r: v.region.key, d: arr(v.d), U: arr(v.U), price: v.price, id: v.itemId || 0, ch: v.changed, th: v.twoHand ? 1 : 0, us: v.usesShield ? 1 : 0, ph: v.pkgHead ? 1 : 0, mf: v.mustFill ? 1 : 0, g: (v.groups || []).map((g) => defOf(g.def)), p: v.pkg ? pkgOf(v.pkg) : -1 })));
 	return JSON.stringify({
 		n: b.n, K: b.K, ax: b.ax || null, need: arr(b.need), W: arr(b.W), scaleOf: arr(b.scaleOf), FILL_WANT: b.FILL_WANT, shieldLocked: b.shieldLocked, baseShield: b.baseShield, startTwoHand: b.startTwoHand,
 		topSumP: b.topSumP.map(arr), lossFrom: b.lossFrom.map(arr), cardSets: b.cardSets.map((c) => ({ members: arr(c.members), c: arr(c.c) })), LV, defs, pkgs,
@@ -175,7 +177,7 @@ export function unpackBase(str) {
 	const pkgs = o.pkgs.map((k) => ({ regions: k.regions }));
 	const regionObj = new Map();
 	const reg = (key) => { let r = regionObj.get(key); if (!r) regionObj.set(key, r = { key }); return r; };
-	o.LV = o.LV.map((list) => list.map((v) => ({ region: reg(v.r), d: v.d, U: v.U, price: v.price, changed: v.ch, twoHand: !!v.th, usesShield: !!v.us, pkgHead: !!v.ph, mustFill: !!v.mf, groups: v.g.map((i) => ({ def: defs[i] })), pkg: v.p >= 0 ? pkgs[v.p] : null })));
+	o.LV = o.LV.map((list) => list.map((v) => ({ region: reg(v.r), d: v.d, U: v.U, price: v.price, itemId: v.id, changed: v.ch, twoHand: !!v.th, usesShield: !!v.us, pkgHead: !!v.ph, mustFill: !!v.mf, groups: v.g.map((i) => ({ def: defs[i] })), pkg: v.p >= 0 ? pkgs[v.p] : null })));
 	o.lossFrom = o.lossFrom.map((a) => Float64Array.from(a));
 	delete o.defs; delete o.pkgs;
 	return o;
