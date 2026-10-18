@@ -38,7 +38,7 @@ import * as pool from "./bf-pool.js";
 import { paretoPrune, within } from "./bf-prune.js";
 import { pPlus, finishDef, solveFill } from "./bf-fill.js";
 import { topSums, optimizeLambda } from "./bf-bound.js";
-import { dfsRun } from "./bf-dfs.js";
+import { dfsTask } from "./bf-dfs.js";
 import { w_SE } from "../../../engine/equip/itemset.dat.js";
 
 const IDX_ID = 0, IDX_KIND = 1, IDX_SLOT = 5, IDX_NAME = 8;
@@ -1258,14 +1258,16 @@ export async function search(opt) {
 			if (poolBase !== LV) { pool.broadcast("dfsBase", staticPart); poolBase = LV; }
 			pool.broadcast("dfsLevel", { LU: levelLU, budget, feas: feasMode, nL, topL, lneed });
 		}
+		// 仕事の置き場（後ろから取り出す。細かく分けた組は逆順に積んで、元の順に取り出す）
 		const taskQ = [{ prefix: [], w: 1 }];
+		let lastProg = 0;
 		let doneW = 0;
 		const exec = async (t) => {
 			if (workers) {
 				try { return await pool.run("dfs", { prefix: t.prefix, ms: t.prefix.length >= n ? 0 : TASK_MS }); } catch (e) { if (e instanceof pool.CancelError) throw new BfStopped(); throw e; }
 			}
 			await tick();
-			return dfsRun(ctx, t.prefix, null, t.prefix.length >= n ? null : performance.now() + TASK_MS);
+			return dfsTask(ctx, t.prefix, t.prefix.length >= n ? 0 : TASK_MS);
 		};
 		const capN = workers ? pool.poolSize() * 2 : 1;
 		let active = 0, failed = null;
@@ -1274,21 +1276,21 @@ export async function search(opt) {
 				if (failed) { if (!active) resolve(); return; }
 				if (shouldStop()) failed = new BfStopped();
 				while (!failed && active < capN && taskQ.length && !finished()) {
-					const t = taskQ.shift();
+					const t = taskQ.pop();
 					active++;
 					exec(t).then(async (r) => {
 						nodes += r.nodes;
 						if (r.aborted) {
-							const sub = dfsRun(ctx, t.prefix, t.prefix.length + 1, null);
-							taskQ.unshift(...sub.prefixes.map((prefix) => ({ prefix, w: t.w / sub.prefixes.length })));
-							if (!sub.prefixes.length) doneW += t.w;
+							for (let q = r.sub.length - 1; q >= 0; q--) taskQ.push({ prefix: r.sub[q], w: t.w / r.sub.length });
+							if (!r.sub.length) doneW += t.w;
 						} else {
 							doneW += t.w;
 							if (r.found) feasFound = true;
 							for (const lf of r.leaves) for (const sol of lf.sols) queue.push(buildPicks(lf.idx, sol));
 						}
 						if (queue.length >= CONC) await flush();
-						onProgress(results.length ? `組み合わせを探しています（${results.length}件）` : "組み合わせを探しています", Math.min(0.95, (budget + Math.min(1, doneW)) / (n + 1)));
+						if (performance.now() - lastProg > 200) onProgress(results.length ? `組み合わせを探しています（${results.length}件）` : "組み合わせを探しています", Math.min(0.95, (budget + Math.min(1, doneW)) / (n + 1)));
+						if (performance.now() - lastProg > 200) lastProg = performance.now();
 					}).catch((e) => { failed = failed || e; }).finally(() => { active--; pump(); });
 				}
 				if (!active && (failed || !taskQ.length || finished())) resolve();

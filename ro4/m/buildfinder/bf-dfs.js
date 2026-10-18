@@ -117,3 +117,10 @@ export function dfsRun(ctx, prefix, cut = null, deadline = null) {
 	rec(prefix.length);
 	return out;
 }
+
+/** 仕事を1つ実行する。時間内に終わらなければ、結果は捨てて1部位細かく分けた組（sub）を返す（分ける作業も仕事をした側でやる） */
+export function dfsTask(ctx, prefix, ms) {
+	const r = dfsRun(ctx, prefix, null, ms ? performance.now() + ms : null);
+	if (!r.aborted) return r;
+	return { nodes: r.nodes, aborted: true, sub: dfsRun(ctx, prefix, prefix.length + 1, null).prefixes, leaves: [], found: false };
+}
