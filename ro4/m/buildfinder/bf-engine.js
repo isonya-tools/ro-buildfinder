@@ -688,9 +688,10 @@ export async function search(opt) {
 		const all = itemCandidatesOf(r, jobId, kindsOf(r)).filter((id) => !ngItemSet.has(id));
 		const out = [];
 		const hosts = new Map(); // 効果は無関係でもカードを挿せる装備（スロット数ごとに一番安いもの）
-		// 武器を何も持っていないときは、武器の種類だけで変わる指標（ASPD・クリティカル）の目標なら、
-		// 効果の無い武器でも全部の種類を候補にする（種類ごと・スロット数ごとに一番安いもの）
-		const unarmed = r.key === "weapon" && isRegionEmpty(base, r) && conds.some((c) => c.key === "aspd" || c.key === "cri");
+		// 武器を何も持っていないときは、武器の種類で変わるもの（ASPD・クリティカル・スキルの使用など）が多いので、
+		// 目標に関係なく、効果の無い武器でも全部の種類を候補にする（種類ごと・スロット数ごとに一番安いもの）。
+		// 目標に関係するエンチャントが付く武器は、上の判定で種類を問わず候補に入っている
+		const unarmed = r.key === "weapon" && isRegionEmpty(base, r);
 		for (const id of all) {
 			if (rel.item(id) || enchOf(id).some((a) => a.length)) { out.push(id); continue; }
 			if (unarmed) {
