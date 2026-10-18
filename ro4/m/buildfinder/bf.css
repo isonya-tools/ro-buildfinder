@@ -145,7 +145,7 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT tr.bf-changed .bf-cur:not(.bf-before) { font-weight: bold; }
 #BF_ROOT tr.bf-changed th { color: #ffd28a; }
 #BF_ROOT .bf-before { color: var(--bf-dim) !important; }
-#BF_FOOT .bf-license { margin: 16px; max-width: 1200px; font-size: 12px; color: var(--bf-dim); border-top: 1px solid var(--bf-line); padding-top: 8px; }
+#BF_FOOT .bf-license { margin: 16px; font-size: 12px; color: var(--bf-dim); border-top: 1px solid var(--bf-line); padding-top: 8px; }
 
 /* ツールチップ */
 .bf-tip { position: fixed; z-index: 10000; display: none; max-width: 560px; background: var(--bf-panel2); color: var(--bf-text); border: 1px solid var(--bf-accent); padding: 8px 10px; font-size: 13px; line-height: 1.5; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,.5); }
@@ -169,3 +169,10 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT .bf-pot { margin: 2px 4px 2px 0; padding: 1px 8px; font-size: 12px; border: 1px solid var(--bf-line); background: transparent; color: var(--bf-dim); cursor: pointer; border-radius: 0; }
 #BF_ROOT .bf-pot.on { background: rgba(240, 168, 67, .25); border-color: rgb(240, 168, 67); color: inherit; }
 #BF_ROOT .bf-skilltable td.bf-sk-chg { color: rgb(240, 168, 67); }
+/* 除外装備（開閉式） */
+#BF_ROOT details.bf-acc > summary { cursor: pointer; list-style: none; }
+#BF_ROOT details.bf-acc > summary::-webkit-details-marker { display: none; }
+#BF_ROOT details.bf-acc > summary h3 { display: inline; margin: 0; }
+#BF_ROOT details.bf-acc > summary h3::before { content: "▶ "; font-size: 12px; }
+#BF_ROOT details.bf-acc[open] > summary h3::before { content: "▼ "; }
+#BF_ROOT details.bf-acc[open] > summary { margin-bottom: 8px; }

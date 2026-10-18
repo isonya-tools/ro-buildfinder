@@ -1,11 +1,12 @@
 /**
  * RO BuildFinder 画面.
- * 今の状態と目標（エンチャントを含む）、スキル、部位ごとの設定、除外装備、検索と結果一覧を受け持つ。
+ * 今の状態と目標（エンチャントを含む）、スキル、固定装備、除外装備、検索と結果一覧を受け持つ。
  * シミュ専用の設定はクッキー（bf_conf）に保存する（URL出力には入れない）。
  */
 import {
 	BF_REGIONS, regionItem, getRefine, search, evalModel, skillTimes, nakedModel, modelFromScreen, attackSkillsOf,
 	itemName, cardName, itemSlotCount, loadOfficial, allCardNames, allEnchantNames, isEnchant, isRegionEmpty, BfStopped, setBuffOn,
+	fixedLock, withoutRegion, cancelPending,
 } from "./bf-engine.js";
 import { BF_METRICS, BF_GROUPS, BF_METRIC_BY_KEY, ELM_NAMES } from "./bf-metrics.js";
 import { ItemObjNew } from "../../../engine/equip/item.dat.js";
@@ -56,7 +57,6 @@ const defaultConf = () => ({
 	enchRemoved: [],  // 一覧から外したエンチャント（今付いていても自動では入れ直さない）
 	cardGoalRows: null, // [[カードID, 目標の枚数 or null]]（エンチャントと同じ仕組み）
 	cardGoalRemoved: [],
-	regionLock: {},   // regionKey -> {item, refine, card, ench}（true のものだけ固定。ほかは自由）
 	ngItems: [], ngCards: [],
 	maxResults: 10, sort: "changes",
 	maxResultsV: 2,   // 表示件数を 10/30/100 の選択式にした版
@@ -71,13 +71,8 @@ function loadConf() {
 		if (!conf.targets || Array.isArray(conf.targets)) conf.targets = {};
 		delete conf.cardRows; delete conf.world; delete conf.timeItems; delete conf.skillTargets;
 		if (!Array.isArray(conf.potentialOn)) conf.potentialOn = [];
-		if (!conf.regionLock || typeof conf.regionLock !== "object") conf.regionLock = {};
-		// 旧形式（自由/装備だけ固定/完全固定）から移す
-		for (const [k, v] of Object.entries(c.regionMode || {})) {
-			if (v === "keep") conf.regionLock[k] = { item: true };
-			if (v === "lock") conf.regionLock[k] = { item: true, refine: true, card: true, ench: true };
-		}
-		delete conf.regionMode;
+		// 部位ごとの固定は「固定装備」（画面で付けている装備を固定）に変わったので捨てる
+		delete conf.regionMode; delete conf.regionLock;
 		if (!conf.buffOn || typeof conf.buffOn !== "object") conf.buffOn = {};
 		if (conf.targets.castVary != null) delete conf.targets.castVary;
 		// 表示件数は 10/30/100 から選ぶ（自由入力だった頃の値は既定の10に戻す）
@@ -219,7 +214,7 @@ function hideTip() { if (tip) tip.style.display = "none"; }
 
 // ---- 画面 ----
 let progressBar, root, timeBox, stateBox, enchBox, cardBox, skillBox, regionBox, ngBox, progressBox, resultBox, searchBtn, stopBtn;
-let lastResults = null, stopFlag = false, running = false, prices = null, lastModel = null, skillList = [];
+let lastResults = null, curToken = null, running = false, prices = null, lastModel = null, skillList = [];
 
 export async function initBuildFinder(container) {
 	loadConf();
@@ -227,8 +222,8 @@ export async function initBuildFinder(container) {
 	root.append(
 		section("今の状態と目標", h("div", {}, stateBox = h("div", { class: "bf-state" }), h("div", { class: "bf-enchrows" }, enchBox = h("div", {}), cardBox = h("div", {}), timeBox = h("div", {})))),
 		section("スキル", skillBox = h("div", { class: "bf-skills" })),
-		section("部位ごとの設定", regionBox = h("table", { class: "bf-regions" })),
-		section("除外装備", buildNg()),
+		section("固定装備", regionBox = h("table", { class: "bf-regions" })),
+		h("details", { class: "bf-sec bf-acc" }, h("summary", {}, h("h3", {}, "除外装備")), buildNg()),
 		section("検索", buildSearch()),
 		resultBox = h("div", { class: "bf-results" }),
 	);
@@ -265,7 +260,8 @@ function licenseNote() {
 		" の計算部分を使って作っています（非営利・",
 		h("a", { href: "https://polyformproject.org/licenses/noncommercial/1.0.0", target: "_blank", rel: "noopener" }, "PolyForm Noncommercial 1.0.0"),
 		"）。ラトリオ、ラトリオ避難所、データ提供者の皆さまへの謝辞と著作権表示は ",
-		h("a", { href: "../../LICENSE", target: "_blank" }, "LICENSE"), " の Required Notice を参照。値段は公式ツールの取引履歴から集計しています。");
+		h("a", { href: "../../LICENSE", target: "_blank" }, "LICENSE"), " の Required Notice を参照。値段は公式ツールの取引履歴から集計しています。",
+		" Development いそにゃ with Claude ・ ", h("a", { href: "https://isonya-tools.web.app/", target: "_blank", rel: "noopener" }, "いそにゃ開発ツール集"));
 }
 
 function refreshAll() {
@@ -563,43 +559,41 @@ function skillTipContent(name, info) {
 	return box;
 }
 
-// ---- 部位ごとの設定（既定は自由。固定ボタンを押したものだけ固定） ----
-const LOCK_PARTS = [["refine", "精錬値"], ["item", "装備"], ["card", "カード"], ["ench", "エンチャント"]];
-const ALL_LOCK = { item: true, refine: true, card: true, ench: true };
+// ---- 固定装備 ----
+// 画面で付けている装備（精錬値・カード・エンチャント込み）はそのまま固定して検索する。「外す」で画面の装備からも外す。
+// 空いているカード・エンチャント枠と、何も付けていない部位だけを探す。シャドウ装備は出さない（常に今のまま）
+const FIXED_COLS = [["refine", "精錬値"], ["item", "装備"], ["card", "カード"], ["ench", "エンチャント"]];
 function renderRegions(model) {
-	regionBox.replaceChildren(h("tr", {}, h("th", {}, "部位"), LOCK_PARTS.map(([, label]) => h("th", {}, label))));
+	regionBox.replaceChildren(h("tr", {}, h("th", {}, "部位"), FIXED_COLS.map(([, label]) => h("th", {}, label))));
+	let any = false;
 	for (const r of BF_REGIONS) {
-		const lk = conf.regionLock[r.key] || {};
+		if (r.shadow) continue;
 		const cur = regionItem(model, r);
-		const empty = !cur || isRegionEmpty(model, r);
-		const nSlot = empty ? 0 : itemSlotCount(cur);
+		if (!cur || isRegionEmpty(model, r)) continue;
+		any = true;
+		const nSlot = itemSlotCount(cur);
 		const ids = r.slots.map((s) => model?.card?.[s] || 0);
 		const names = (list) => list.filter((c) => c > 0).map(cardName).join(" / ") || "-";
 		const text = {
-			item: empty ? "-" : itemName(cur),
+			item: itemName(cur),
 			refine: r.refine ? "+" + (regionRefine(model, r) ?? 0) : "-",
 			card: names(ids.slice(0, nSlot)),
 			ench: names(ids.slice(nSlot)),
 		};
-		// 部位の固定 = 装備・精錬値・カード・エンチャントを全部固定
-		const allOn = LOCK_PARTS.every(([p]) => p === "refine" && !r.refine ? true : lk[p]);
-		const regionBtn = h("button", { type: "button", class: "bf-lock" + (allOn ? " on" : ""), onclick: () => {
-			if (allOn) delete conf.regionLock[r.key]; else conf.regionLock[r.key] = { ...ALL_LOCK };
-			saveConf(); renderRegions(lastModel);
-		} }, allOn ? "固定中" : "固定");
-		regionBox.append(h("tr", {}, h("td", { class: "bf-lockcell" + (allOn ? " bf-locked" : "") }, regionBtn, h("span", { class: "bf-lockval" }, r.label)), LOCK_PARTS.map(([part]) => {
-			if (part === "refine" && !r.refine) return h("td", { class: "bf-dim" }, "-");
-			const on = !!lk[part];
-			const btn = h("button", { type: "button", class: "bf-lock" + (on ? " on" : ""),
-				onclick: () => {
-					const x = { ...(conf.regionLock[r.key] || {}) };
-					if (x[part]) delete x[part]; else x[part] = true;
-					if (Object.keys(x).length) conf.regionLock[r.key] = x; else delete conf.regionLock[r.key];
-					saveConf(); renderRegions(lastModel);
-				} }, on ? "固定中" : "固定");
-			return h("td", { class: "bf-lockcell" + (on ? " bf-locked" : "") }, btn, h("span", { class: "bf-lockval" }, text[part]));
-		})));
+		const btn = h("button", { type: "button", class: "bf-lock", disabled: running, onclick: () => removeRegion(r) }, "外す");
+		regionBox.append(h("tr", {},
+			h("td", { class: "bf-lockcell" }, btn, h("span", { class: "bf-lockval" }, r.label)),
+			FIXED_COLS.map(([part]) => h("td", { class: part === "refine" && !r.refine ? "bf-dim" : "" }, text[part]))));
 	}
+	if (!any) regionBox.append(h("tr", {}, h("td", { colspan: 5, class: "bf-zero" }, "なし")));
+}
+/** 部位の装備を画面からも外す */
+function removeRegion(r) {
+	if (running) return;
+	let model;
+	try { model = modelFromScreen(); } catch { return; }
+	applyModelToScreen(withoutRegion(model, r), [r]);
+	setTimeout(refreshAll, 300);
 }
 function regionRefine(m, r) { return m ? getRefine(m, r) : null; }
 
@@ -643,7 +637,7 @@ function buildSearch() {
 	const maxIn = h("select", { class: "bf-maxres", onchange: () => { conf.maxResults = Number(maxIn.value); saveConf(); } },
 		MAX_RESULT_CHOICES.map((n) => h("option", { value: n, selected: n === conf.maxResults }, String(n))));
 	searchBtn = h("button", { type: "button", class: "bf-go", onclick: runSearch }, "検索");
-	stopBtn = h("button", { type: "button", class: "bf-stop", disabled: true, onclick: () => { stopFlag = true; } }, "止める");
+	stopBtn = h("button", { type: "button", class: "bf-stop", disabled: true, onclick: stopSearch }, "止める");
 	progressBox = h("div", { class: "bf-progress" });
 	progressBar = h("div", { class: "bf-bar", hidden: true }, h("div", { class: "bf-bar-fill" }), h("span", { class: "bf-bar-pct" }));
 	return h("div", {},
@@ -678,7 +672,10 @@ async function runSearch() {
 	if (running) return;
 	const { conds, skillLv } = buildConds();
 	if (!conds.length) { progressBox.textContent = "目標を1つ以上入れてください。"; return; }
-	running = true; stopFlag = false;
+	running = true;
+	// 止めるボタンは押したその場で画面を戻す（検索の後始末は裏で終わらせ、結果は捨てる）
+	const token = { stop: false };
+	curToken = token;
 	freezeScreen();
 	searchBtn.disabled = true; stopBtn.disabled = false;
 	resultBox.replaceChildren();
@@ -688,28 +685,41 @@ async function runSearch() {
 	try {
 		const res = await search({
 			conds, skillLv,
-			lock: conf.regionLock,
+			lock: fixedLock(modelFromScreen()),
 			ngItems: conf.ngItems, ngCards: conf.ngCards,
 			maxResults: conf.maxResults,
 			priceOf: priceOfFactory(prices),
-			onProgress: (text, ratio) => { progressBox.textContent = text; setBar(ratio); },
+			onProgress: (text, ratio) => { if (!token.stop) { progressBox.textContent = text; setBar(ratio); } },
 			// 見つかったものから順に結果に出す
-			onResults: (results, ctx) => { lastResults = { results, ...ctx, conds }; renderResults(); },
-			shouldStop: () => stopFlag,
+			onResults: (results, ctx) => { if (!token.stop) { lastResults = { results, ...ctx, conds }; renderResults(); } },
+			shouldStop: () => token.stop,
 		});
+		if (token.stop) return;
 		lastResults = { ...res, conds };
 		const sec = Math.round((performance.now() - t0) / 1000);
 		const why = res.stats?.unreachable?.length ? `。どう組み合わせても届かない条件: ${res.stats.unreachable.join("、")}` : "";
 		progressBox.textContent = res.results.length ? `${res.results.length}件見つかりました（${sec}秒）` : `条件を満たす構成は見つかりませんでした（${sec}秒）${why}`;
 		renderResults();
 	} catch (e) {
+		if (token.stop) return;
 		if (e instanceof BfStopped) progressBox.textContent = "";
 		else { progressBox.textContent = "エラー: " + e.message; console.error(e); }
 	} finally {
-		running = false; searchBtn.disabled = false; stopBtn.disabled = true;
-		progressBar.hidden = true;
-		thawScreen();
+		if (!token.stop) endSearch();
 	}
+}
+function endSearch() {
+	running = false; searchBtn.disabled = false; stopBtn.disabled = true;
+	progressBar.hidden = true;
+	curToken = null;
+	thawScreen();
+}
+function stopSearch() {
+	if (!curToken) return;
+	curToken.stop = true;
+	cancelPending();
+	progressBox.textContent = "";
+	endSearch();
 }
 /** 進捗バー（戻らないように最大値で表示） */
 let barMax = 0;

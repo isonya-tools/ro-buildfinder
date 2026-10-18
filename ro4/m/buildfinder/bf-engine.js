@@ -27,6 +27,13 @@ import * as CR from "../../../engine/runtime/common.js";
 import { readMetrics } from "./bf-metrics.js";
 import { loadHard, makeRelevance, relevantItemSets, isHardItem } from "./bf-relevance.js";
 import * as NE from "../../../engine/equip/item.dat.js";
+import { n_Enekyori, set_n_Enekyori } from "../../../engine/runtime/ro4-state.js";
+import { n_Skill1SW } from "../../../engine/ui/BuffJobSpecificSelf.js";
+import { n_Skill4SW } from "../../../engine/ui/BuffGuildAndGospel.js";
+import { n_Skill7SW } from "../../../engine/ui/BuffItemAndFood.js";
+import { n_Skill8SW } from "../../../engine/ui/BuffOtherCategory.js";
+import { n_A_PassSkill, n_A_PassSkill4, n_A_PassSkill7, n_A_PassSkill8 } from "../../../engine/skill/skillstate.js";
+import * as pool from "./bf-pool.js";
 
 const IDX_ID = 0, IDX_KIND = 1, IDX_SLOT = 5, IDX_NAME = 8;
 const CIDX_ID = 0, CIDX_KIND = 1, CIDX_NAME = 2;
@@ -126,6 +133,13 @@ function placeItem(m, r, iid, refine) {
 	if (r.key === "weapon") m.weapon.type = ItemObjNew[iid][IDX_KIND];
 	setRefine(m, r, refine);
 }
+/** 部位を空にしたモデル（固定装備の「外す」用） */
+export function withoutRegion(model, r) {
+	const m = cloneModel(model);
+	clearRegion(m, r);
+	if (r.key === "weapon") { m.weapon.type = 0; setRefine(m, r, 0); }
+	return m;
+}
 /** 部位を空にする（装備なし・カード/エンチャなし） */
 function clearRegion(m, r) {
 	setRegionItem(m, r, r.empty);
@@ -154,7 +168,7 @@ function cloneModel(m) {
 
 // 計算結果の使い回し（同じ入力なら計算しない）。条件だけ変えて検索し直すときに効く
 const coreCache = new Map(), skillCache = new Map();
-const CACHE_MAX = 30000; // キーはモデル全体のJSON（大きい）なので、多く持つとメモリが足りなくなる
+const CACHE_MAX = 60000; // キーはモデル全体のJSON（大きい）なので、多く持つとメモリが足りなくなる
 function cached(map, key, fn) {
 	let v = map.get(key);
 	if (v === undefined) {
@@ -178,6 +192,79 @@ export function skillTimes(model, skillId, lv) {
 		const r = registryGet("calcFromModel")(m)?.activeResultArray?.[0];
 		return { cf: Math.round((r?.castFixed || 0) * 1000), ct: Math.round((r?.coolTime || 0) * 1000) };
 	});
+}
+
+// ---- 別スレッド（Web Worker）での計算 ----
+// 検索中は計算を Worker の束に渡して並列に回す（CPUのコア数ぶん速くなる）。Worker が使えないときはこの画面のスレッドで計算する
+let usePool = false, leak = null, leakKey = "";
+const inflight = new Map();
+/** 計算結果の使い回しつきで、Worker か画面のスレッドで計算する */
+function cachedAsync(map, key, type, model, local) {
+	const v = map.get(key);
+	if (v !== undefined) return v;
+	const fk = type + key;
+	if (inflight.has(fk)) return inflight.get(fk);
+	const done = (r) => { inflight.delete(fk); if (map.size >= CACHE_MAX) map.clear(); map.set(key, r); return r; };
+	let p;
+	if (usePool) {
+		p = pool.run(type, model).then(done, (e) => {
+			inflight.delete(fk);
+			if (e instanceof pool.CancelError) throw new BfStopped();
+			// Worker で計算できなかったものは、以後この画面のスレッドで計算する
+			usePool = false;
+			return done(local());
+		});
+	} else p = Promise.resolve().then(() => done(local()));
+	inflight.set(fk, p);
+	return p;
+}
+function evalModelAsync(model) {
+	const key = leakKey + JSON.stringify(model);
+	return cachedAsync(coreCache, key, "core", model, () => { if (leak) set_n_Enekyori(leak.n_Enekyori); return readMetrics(registryGet("calcCoreFromModel")(model)); });
+}
+function skillTimesAsync(model, skillId, lv) {
+	const m = cloneModel(model);
+	m.attackMethod = { skillId, sourceType: 0, skillLv: lv, optionValueArray: [] };
+	return cachedAsync(skillCache, leakKey + JSON.stringify(m), "skill", m, () => {
+		const r = registryGet("calcFromModel")(m)?.activeResultArray?.[0];
+		return { cf: Math.round((r?.castFixed || 0) * 1000), ct: Math.round((r?.coolTime || 0) * 1000) };
+	});
+}
+async function evalAllAsync(model, skills = [], naked = {}, cards = [], elms = []) {
+	const [core, ...times] = await Promise.all([evalModelAsync(model), ...skills.map((sk) => skillTimesAsync(model, sk.id, sk.lv))]);
+	const out = { ...core };
+	skills.forEach((sk, i) => {
+		const t = times[i];
+		const n = naked[sk.id] || t;
+		out[`sk:${sk.id}:cf`] = n.cf - t.cf;
+		out[`sk:${sk.id}:ct`] = n.ct - t.ct;
+		out[`skraw:${sk.id}`] = t;
+	});
+	for (const cid of cards) out["card:" + cid] = model.card.reduce((a, c) => a + (c === cid ? 1 : 0), 0);
+	for (const e of elms) out["elm:" + e] = out.bodyElm === e ? 1 : 0;
+	return out;
+}
+/**
+ * 「固定装備」: 画面で付けている装備（精錬値・カード・エンチャント込み）は固定し、空いているカード・エンチャント枠と
+ * 何も付けていない部位だけを探す。シャドウ装備は探さない（常に今のまま）
+ */
+export function fixedLock(model) {
+	const lock = {};
+	for (const r of BF_REGIONS) {
+		if (r.shadow) lock[r.key] = { item: true, refine: true, card: true, ench: true };
+		else if (!isRegionEmpty(model, r)) lock[r.key] = { item: true, refine: true, card: true, ench: true, fill: true };
+	}
+	return lock;
+}
+/** 検索を止めたときに、Worker に渡して待っている計算を取り消す */
+export function cancelPending() { pool.cancelAll(); }
+/** list の各要素に fn を同時に conc 個まで走らせ、結果を元の並びで返す */
+async function pmap(list, fn, conc) {
+	const out = new Array(list.length);
+	let next = 0;
+	const runOne = async () => { while (next < list.length) { const i = next++; out[i] = await fn(list[i], i); } };
+	await Promise.all(Array.from({ length: Math.max(1, Math.min(conc, list.length)) }, runOne));
+	return out;
 }
 
 /** 装備を外した状態（武器本体だけ残す）。スキルの短縮量の基準 */
@@ -220,7 +307,7 @@ export function isRegionEmpty(model, region) {
 	const id = regionItem(model, region);
 	if (!id || id === region.empty) return true;
 	const name = itemName(id);
-	return /装備なし$|^\(?なし\)?$/.test(name) || name === "";
+	return /装備なし$|^\(?なし\)?$/.test(name) || name === "" || name === "素手";
 }
 
 /**
@@ -385,26 +472,44 @@ export async function search(opt) {
 	const cards = keys.filter((k) => k.startsWith("card:")).map((k) => Number(k.slice(5)));
 	const elms = keys.filter((k) => k.startsWith("elm:")).map((k) => Number(k.slice(4)));
 	const rel = makeRelevance(keys);
+	// 計算は Worker の束で並列に回す。最初に基準の構成で画面のスレッドの計算と一致するか確かめ、合わなければ使わない
+	// モデルに入っていないが計算に効く画面側の状態（支援欄の開閉など）。Worker 側にも同じ値を入れる
+	leak = { n_Enekyori, n_Skill1SW, n_Skill4SW, n_Skill7SW, n_Skill8SW,
+		n_A_PassSkill: [...n_A_PassSkill], n_A_PassSkill4: [...n_A_PassSkill4], n_A_PassSkill7: [...n_A_PassSkill7], n_A_PassSkill8: [...n_A_PassSkill8] };
+	// 計算結果の使い回しは、この状態が同じときだけ（キーの頭に付ける）
+	leakKey = JSON.stringify(leak);
+	usePool = false;
+	const baseLocal = evalModel(base);
+	set_n_Enekyori(leak.n_Enekyori);
+	if (pool.available()) {
+		pool.setState(leak);
+		try {
+			const v = await pool.run("core", base);
+			usePool = Object.keys(baseLocal).every((k) => Math.abs((v[k] ?? 0) - baseLocal[k]) < 1e-6);
+			if (!usePool) pool.disable();
+		} catch { pool.disable(); }
+	}
+	const CONC = usePool ? pool.poolSize() * 4 : 1;
 	const nakedM = nakedModel(base);
-	const naked = Object.fromEntries(skills.map((sk) => [sk.id, skillTimes(nakedM, sk.id, sk.lv)]));
+	const naked = Object.fromEntries(await Promise.all(skills.map(async (sk) => [sk.id, await skillTimesAsync(nakedM, sk.id, sk.lv)])));
 	// スキルの固定詠唱・CTは戦闘計算まで回すので重い（1スキルで本体の計算の1.5倍ほど）。
 	// 入れ替える物がスキルの短縮に関係しないときは計算せず、ref（比べる元）の値をそのまま使う
 	const skKeys = keys.filter((k) => k.startsWith("sk:"));
 	const relSk = skills.length ? makeRelevance(skKeys) : null;
-	const evalM = (m, ref = null) => {
+	const evalM = async (m, ref = null) => {
 		let r;
 		if (ref && skills.length) {
-			r = evalAll(m, [], naked, cards, elms);
+			r = await evalAllAsync(m, [], naked, cards, elms);
 			for (const k of skKeys) r[k] = ref[k];
 			for (const sk of skills) r[`skraw:${sk.id}`] = ref[`skraw:${sk.id}`];
-		} else r = evalAll(m, skills, naked, cards, elms);
+		} else r = await evalAllAsync(m, skills, naked, cards, elms);
 		return r;
 	};
 	const skRef = (isRel, ref) => (relSk && !isRel ? ref : null);
 	const meets = (val) => conds.every((c) => val[c.key] - c.target >= -1e-9);
 	const coreKeys = conds.filter((c) => !c.key.startsWith("sk:"));
 
-	const baseVal = evalM(base);
+	const baseVal = await evalM(base);
 	const need = conds.map((c) => c.target - baseVal[c.key]);
 	const baseWeapon = base.equip[R.EQUIP_REGION_ID_ARMS];
 
@@ -423,8 +528,9 @@ export async function search(opt) {
 	// ---- 候補の絞り込み ----
 	onProgress("候補を調べています", 0);
 	const L = Object.fromEntries(BF_REGIONS.map((r) => {
-		const x = lock[r.key] || {};
-		return [r.key, { item: !!x.item, refine: !!x.refine, card: !!x.card, ench: !!x.ench }];
+		// シャドウ装備は探さない（常に今のまま）
+		const x = r.shadow ? { item: true, refine: true, card: true, ench: true } : lock[r.key] || {};
+		return [r.key, { item: !!x.item, refine: !!x.refine, card: !!x.card, ench: !!x.ench, fill: !!x.fill }];
 	}));
 	// カード・エンチャントだけ固定した部位は、装備を入れ替えても今のカード・エンチャントをそのまま付ける
 	// （カードは枠が足りる装備、エンチャントはその枠に同じものが付く装備だけ）。keepSlots: 部位 → [[枠, ID, カードか]]
@@ -452,7 +558,14 @@ export async function search(opt) {
 		for (const [slot, cid] of keepSlots.get(r.key) || []) m.card[slot] = cid;
 	};
 	const keepItem = BF_REGIONS.filter((r) => L[r.key].item).map((r) => r.key);
-	const regions = BF_REGIONS.filter((r) => !(L[r.key].item && L[r.key].card && L[r.key].ench));
+	// 空いている枠の数（固定した装備でも、空いているカード・エンチャント枠は探す: fill）
+	const emptySlots = (r) => {
+		if (isRegionEmpty(base, r)) return 0;
+		const n = itemSlotCount(regionItem(base, r));
+		const detail = enchantDetailOf(regionItem(base, r));
+		return r.slots.filter((slot, i) => slot >= 0 && !(base.card[slot] > 0) && (i < n || detail[i]?.size)).length;
+	};
+	const regions = BF_REGIONS.filter((r) => !(L[r.key].item && L[r.key].card && L[r.key].ench) || (L[r.key].fill && emptySlots(r) > 0));
 	const kindsOf = (r) => r.key === "weapon" ? WEAPON_KINDS : r.kinds;
 	const enchCache = new Map();
 	const enchOf = (id) => {
@@ -494,13 +607,8 @@ export async function search(opt) {
 		for (let s = 0; s < 4; s++) {
 			if (ctx.r.slots[s] == null || ctx.r.slots[s] < 0 || kept.has(ctx.r.slots[s])) { out.push([]); continue; }
 			if (s < nSlot) { out.push(ctx.cardOpts); continue; }
-			const opts = [];
-			for (const cid of ench[s] || []) {
-				await tick();
-				const ed = ctx.slotDelta(s, cid);
-				if (relevant(ed)) opts.push({ id: cid, d: ed });
-			}
-			out.push(opts);
+			const ds = await pmap(ench[s] || [], async (cid) => { await tick(); return ctx.slotDelta(s, cid); }, CONC);
+			out.push((ench[s] || []).map((cid, j) => ({ id: cid, d: ds[j] })).filter((o) => relevant(o.d)));
 		}
 		return out;
 	};
@@ -514,7 +622,7 @@ export async function search(opt) {
 		// 部位を空にした状態（入れ替え時のカード・エンチャの差分の基準）
 		const cleared = cloneModel(base);
 		clearRegion(cleared, r);
-		const clearedVal = evalM(cleared);
+		const clearedVal = await evalM(cleared);
 		const clearedD = vecFrom(clearedVal, baseVal);
 		const cardDelta = new Map();
 		const slotDelta = (s, cid) => {
@@ -523,19 +631,14 @@ export async function search(opt) {
 			if (!cardDelta.has(key)) {
 				const m = cloneModel(cleared);
 				m.card[r.slots[s]] = cid;
-				cardDelta.set(key, vecFrom(evalM(m, skRef(relSk?.card(cid), clearedVal)), clearedVal));
+				cardDelta.set(key, evalM(m, skRef(relSk?.card(cid), clearedVal)).then((v) => vecFrom(v, clearedVal)));
 			}
 			return cardDelta.get(key);
 		};
 
 		// カード候補（差分は空の部位に入れたときのもの。カード枠どこに挿しても同じとみなす）
-		const cardOpts = [];
-		for (const cid of regionCards[ri]) {
-			await tick();
-			done++;
-			const d = slotDelta(0, cid);
-			if (relevant(d)) cardOpts.push({ id: cid, d });
-		}
+		const cardDs = await pmap(regionCards[ri], async (cid) => { await tick(); done++; return slotDelta(0, cid); }, CONC);
+		const cardOpts = regionCards[ri].map((cid, j) => ({ id: cid, d: cardDs[j] })).filter((o) => relevant(o.d));
 		const ctx = { r, cardOpts, slotDelta, keepVariants: [] };
 
 		const variants = [];
@@ -551,25 +654,25 @@ export async function search(opt) {
 			const slotChoices = [];
 			for (let s = 0; s < 4; s++) {
 				const opts = [];
-				if (r.slots[s] == null || r.slots[s] < 0 || (s < nSlot ? L[r.key].card : L[r.key].ench)) { slotChoices.push(opts); continue; }
+				if (r.slots[s] == null || r.slots[s] < 0 || ((s < nSlot ? L[r.key].card : L[r.key].ench) && !(L[r.key].fill && !curCards[s]))) { slotChoices.push(opts); continue; }
 				if (s < nSlot) {
 					// 今のカードを外したときの差分を足す
 					let removeD = zero();
 					if (curCards[s] && cardOpts.length) {
 						const m0 = cloneModel(base);
 						m0.card[r.slots[s]] = 0;
-						removeD = vecFrom(evalM(m0, skRef(relSk?.card(curCards[s]), baseVal)), baseVal);
+						removeD = vecFrom(await evalM(m0, skRef(relSk?.card(curCards[s]), baseVal)), baseVal);
 					}
 					for (const o of cardOpts) if (o.id !== curCards[s]) opts.push({ id: o.id, d: o.d.map((x, i) => x + removeD[i]) });
 				} else {
-					for (const cid of ench[s] || []) {
-						if (cid === curCards[s]) continue;
+					const list = (ench[s] || []).filter((cid) => cid !== curCards[s]);
+					const ds = await pmap(list, async (cid) => {
 						await tick();
 						const m = cloneModel(base);
 						m.card[r.slots[s]] = cid;
-						const d = vecFrom(evalM(m, skRef(relSk?.card(cid), baseVal)), baseVal);
-						if (relevant(d)) opts.push({ id: cid, d });
-					}
+						return vecFrom(await evalM(m, skRef(relSk?.card(cid), baseVal)), baseVal);
+					}, CONC);
+					list.forEach((cid, j) => { if (relevant(ds[j])) opts.push({ id: cid, d: ds[j] }); });
 				}
 				slotChoices.push(opts);
 			}
@@ -580,12 +683,13 @@ export async function search(opt) {
 		}
 		ctx.keepVariants = variants.slice();
 
-		// c) 装備を入れ替える
-		for (const iid of regionItems[ri]) {
+		// c) 装備を入れ替える（装備ごとに並列に調べ、結果は元の並びで足す）
+		const perItem = await pmap(regionItems[ri], async (iid) => {
+			const variants = [];
 			await tick();
 			done++;
 			if (done % 10 === 0) onProgress("候補を調べています", done / totalWork);
-			if (iid === curItem) continue;
+			if (iid === curItem) return variants;
 			// 精錬値は+0が基本。過剰精錬で目標の効果が変わるとき・エンチャントに精錬値の条件があるときだけ、その精錬値も候補にする。
 			// 装備自体に目標の効果が無い（エンチャントやカード枠のために入れた）ものは計算せず、部位を空にしたときと同じとみなす
 			const hasKeep = keepSlots.has(r.key);
@@ -600,7 +704,7 @@ export async function search(opt) {
 				if (selfRel || hasKeep) {
 					const m = cloneModel(cleared);
 					place(m, r, iid, lv);
-					d = vecFrom(evalM(m, skRef(relSk?.item(iid), clearedVal)), baseVal);
+					d = vecFrom(await evalM(m, skRef(relSk?.item(iid), clearedVal)), baseVal);
 				}
 				const slotChoices = await slotChoicesFor(ctx, iid, lv);
 				const nEnch = slotChoices.reduce((a, o) => a + o.length, 0);
@@ -613,7 +717,9 @@ export async function search(opt) {
 					variants.push({ region: r, keep: false, itemId: iid, refine: lv, selfRel, cards: v.cards, d: v.d, price: v.price, count: 1 + v.cards.length, changed: 1, twoHand: r.key === "weapon" && isTwoHanded(iid), usesShield: r.key === "shield" });
 				}
 			}
-		}
+			return variants;
+		}, CONC);
+		for (const list of perItem) for (const v of list) variants.push(v);
 		regionVariants.push(trimVariants(paretoPrune(variants, need), need, 300));
 		regionCtx.push(ctx);
 	}
@@ -656,7 +762,7 @@ export async function search(opt) {
 				place(m, a.region, a.itemId, a.refine);
 			}
 			if (bad) break;
-			d = vecFrom(evalM(m), baseVal);
+			d = vecFrom(await evalM(m), baseVal);
 			if (relevant(d)) break;
 			if (!assign.some((a) => !a.already && refineLevelsOf(a.region, a.itemId).length > 1)) break;
 		}
@@ -723,7 +829,7 @@ export async function search(opt) {
 		lastEmit = performance.now();
 		onResults(results.slice(), { base, baseVal });
 	};
-	const verify = (picks) => {
+	const verify = async (picks) => {
 		const f = { picks, changes: changesOf({ picks }), cost: costOf({ picks }) };
 		const m = cloneModel(base);
 		for (const v of picks) {
@@ -744,11 +850,12 @@ export async function search(opt) {
 		if (results.some((x) => within(x.toks, toks))) return;
 		// まず本体の計算だけで、スキル以外の条件を満たすか確かめる（スキルの計算は重いので後回し）
 		if (skills.length) {
-			const core = evalAll(m, [], naked, cards, elms);
+			const core = await evalAllAsync(m, [], naked, cards, elms);
 			if (!coreKeys.every((c) => core[c.key] - c.target >= -1e-9)) return;
 		}
-		const val = evalM(m);
+		const val = await evalM(m);
 		if (!meets(val)) return;
+		if (results.some((x) => within(x.toks, toks))) return;
 		for (let i = results.length - 1; i >= 0; i--) if (within(toks, results[i].toks)) results.splice(i, 1);
 		const changed = picks.filter((v) => v.changed).map((v) => ({ ...v }));
 		let price = 0, unknown = 0;
@@ -802,21 +909,19 @@ export async function search(opt) {
 			states = next.slice(0, WIDTH);
 			// 足し算の見込みは、入れ替えた部位どうしの組み合わせ（セットが切れる、固定詠唱は一番大きいものだけ効く、
 			// ASPDは足し算にならない）でずれるので、上位は実計算した値に置き換えて並べ直す
-			for (const st of states.slice(0, REAL_TOP)) {
-				const val = evalM(modelOf(st.picks));
+			await pmap(states.slice(0, REAL_TOP), async (st) => {
+				const val = await evalM(modelOf(st.picks));
 				st.sum = keys.map((k) => val[k] - baseVal[k]);
 				st.real = true;
-			}
+			}, CONC);
 			states.sort((a, b) => (score(b.sum) - score(a.sum)) || (a.changes - b.changes) || (a.cost - b.cost));
 		}
 		const goal = keys.filter((_, k) => need[k] > 0).length;
 		const done = states.filter((st) => score(st.sum) >= goal - 1e-6 && !(st.th && shieldLocked && baseShield))
 			.sort((a, b) => (a.changes - b.changes) || (a.cost - b.cost));
-		for (const st of done) {
+		for (let i = 0; i < done.length && results.length < maxResults; i += CONC) {
 			await tick();
-			foundCount++;
-			verify(st.picks);
-			if (results.length >= maxResults) break;
+			await Promise.all(done.slice(i, i + CONC).map((st) => { foundCount++; return verify(st.picks); }));
 		}
 		// 足し算の見込みでは届くのに実計算で届かない（固定詠唱は一番大きいものだけ効く、ASPDは足し算にならない、
 		// 入れ替えでほかの部位とのセットが切れる、など）ときは、実計算しながら1部位ずつ差し替えて詰める
@@ -843,30 +948,34 @@ export async function search(opt) {
 	// 足りない分（目標ごとに、足りない量÷最初に足りなかった量）の合計。0なら全部届いている
 	const shortOf = (val) => { let p = 0; for (let k = 0; k < keys.length; k++) { const c = conds[k]; const lack = c.target - val[c.key]; if (lack > 1e-9) p += lack / (need[k] > 0 ? need[k] : normOf(k)); } return p; };
 	const repair = async (picks) => {
-		let val = evalM(modelOf(picks));
+		let val = await evalM(modelOf(picks));
 		let cur = shortOf(val);
 		for (let step = 0; step < REPAIR_STEPS && cur > 1e-9; step++) {
 			const lack = keys.map((_, k) => conds[k].target - val[conds[k].key]);
 			const gain = (v) => { let g = 0; for (let k = 0; k < keys.length; k++) if (lack[k] > 1e-9 && v.d[k] > 0) g += Math.min(v.d[k], lack[k]) / (need[k] > 0 ? need[k] : normOf(k)); return g; };
-			let best = null;
+			const trials = [];
 			for (let i = 0; i < n; i++) {
 				const opts = regionVariants[i].filter((v) => !v.pkg && v !== picks[i] && gain(v) > 1e-9)
 					.map((v) => [gain(v), v]).sort((a, b) => b[0] - a[0]).slice(0, REPAIR_PER_REGION).map((x) => x[1]);
 				for (const v of opts) {
-					await tick();
 					if (v.region.key === "shield" && v.usesShield && picks.some((p) => p.region.key === "weapon" && p.twoHand)) continue;
 					if (v.region.key === "weapon" && v.twoHand && picks.some((p) => p.region.key === "shield" && p.usesShield)) continue;
 					const trial = picks.slice();
 					trial[i] = v;
-					const tv = evalM(modelOf(trial));
-					const sh = shortOf(tv);
-					if (sh < cur - 1e-9 && (!best || sh < best.sh - 1e-9)) best = { sh, trial, tv };
+					trials.push(trial);
 				}
 			}
+			// 差し替え案はまとめて並列に実計算する
+			const vals = await pmap(trials, async (trial) => { await tick(); return evalM(modelOf(trial)); }, CONC);
+			let best = null;
+			trials.forEach((trial, j) => {
+				const sh = shortOf(vals[j]);
+				if (sh < cur - 1e-9 && (!best || sh < best.sh - 1e-9)) best = { sh, trial, tv: vals[j] };
+			});
 			if (!best) break;
 			picks = best.trial; val = best.tv; cur = best.sh;
 		}
-		if (cur <= 1e-9) { foundCount++; verify(picks); }
+		if (cur <= 1e-9) { foundCount++; await verify(picks); }
 	};
 
 	const pick = [];
@@ -892,7 +1001,7 @@ export async function search(opt) {
 			if (twoHand && shieldLocked && baseShield) return;
 			foundCount++; levelLeaves++;
 			await tick();
-			verify(pick.slice());
+			await verify(pick.slice());
 			return;
 		}
 		const must = req[i];
