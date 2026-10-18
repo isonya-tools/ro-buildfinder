@@ -9,7 +9,7 @@
  * 4. 「リフレッシュ状態になる」効果
  * のどれかに当たるものだけを、実際に計算して確かめる対象にする。
  */
-import { ItemObjNew } from "../../../engine/equip/item.dat.js";
+import { ItemObjNew, ITEM_ID_YUSHANO_MAGIC_COAT } from "../../../engine/equip/item.dat.js";
 import { CardObjNew } from "../../../engine/equip/card.dat.js";
 import { w_SE } from "../../../engine/equip/itemset.dat.js";
 import { REFRESH_ITEMS, REFRESH_CARDS } from "./bf-metrics.js";
@@ -24,7 +24,7 @@ const SP_OF = {
 	aspd: [...STATS, 12, 101], hit: [...STATS, 8], flee: [...STATS, 9], lucky: [...STATS, 11], cri: [...STATS, 10],
 	castStat: CAST_STATS, castGear: [73], castFixed: [109], delay: [74],
 	ignDefN: [290, 291, 293], ignDefB: [290, 292, 293], ignMdefN: [295, 296, 298], ignMdefB: [295, 297, 298],
-	kiri: [23], perfect: [86], bodyElm: [198],
+	kiri: [23], noCancel: [380], perfect: [86], bodyElm: [198],
 	resBoss: [77], resNotBoss: [79], resLong: [78], resPlayer: [243, 274, 277],
 };
 for (let i = 0; i < 10; i++) {
@@ -39,6 +39,7 @@ const HARD_CAT = (key) => {
 	if (key.startsWith("sk:") || ["castGear", "castFixed", "delay"].includes(key)) return "cast";
 	if (key.startsWith("ign")) return "ign";
 	if (key === "kiri" || key === "perfect") return "hit";
+	if (key === "noCancel") return "cancel";
 	if (key.startsWith("res")) return "resist";
 	if (key === "bodyElm" || key.startsWith("elm:")) return "elm";
 	if (key === "refresh" || key.startsWith("card:")) return null;
@@ -87,13 +88,14 @@ export function makeRelevance(keys) {
 	const probeKeys = new Set(); // 実際に装備して変わった指標で判定するもの
 	const skillIds = new Set(); // スキルごとの処理で装備を見ているもの（castBySkill）
 	const targetCards = new Set();
-	let refresh = false;
+	let refresh = false, cancel = false;
 	for (const key of keys) {
 		const cat = HARD_CAT(key);
 		// スキルの固定詠唱・CT: スキルごとの処理で装備を見ているもの（固定詠唱は、固定詠唱全般で実際に変わるものも）
 		if (key.startsWith("sk:")) { skillIds.add(key.split(":")[1]); skillIds.add("any"); if (key.endsWith(":cf")) probeKeys.add("castFixed"); }
 		else if (key.startsWith("elm:")) probeKeys.add("bodyElm");
 		else if (cat) probeKeys.add(key);
+		if (key === "noCancel") cancel = true;
 		if (key === "refresh") refresh = true;
 		else if (key.startsWith("card:")) targetCards.add(Number(key.slice(5)));
 		else if (key.startsWith("elm:")) spSet.add(198);
@@ -112,7 +114,8 @@ export function makeRelevance(keys) {
 		return false;
 	};
 	const memo = new Map();
-	const directItem = (id) => hit(itemPairs(id)) || inHard("items", id) || (refresh && REFRESH_ITEMS.has(id));
+	// 勇者のマジックコートは精錬値が奇数のとき詠唱が中断されない（計算処理が装備IDを直接見ている）
+	const directItem = (id) => (cancel && id === ITEM_ID_YUSHANO_MAGIC_COAT) || hit(itemPairs(id)) || inHard("items", id) || (refresh && REFRESH_ITEMS.has(id));
 	const directCard = (id) => targetCards.has(id) || hit(cardPairs(id)) || inHard("cards", id) || (refresh && REFRESH_CARDS.has(id));
 	/** セット効果の行（w_SE[n][0]。正: アイテムの行、負: カードの行）が関係するか */
 	const setRowDirect = (src) => {
