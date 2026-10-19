@@ -474,10 +474,14 @@ export async function loadOfficial() {
 		const j = res.ok ? await res.json() : null;
 		if (j) {
 			const names = j.names.map(normName);
-			official = { names: new Set(names), items: new Map(Object.entries(j.items).map(([k, v]) => [normName(k), new Set(v.map((i) => names[i]))])) };
+			official = {
+				names: new Set(names), items: new Map(Object.entries(j.items).map(([k, v]) => [normName(k), new Set(v.map((i) => names[i]))])),
+				// 超越段階の条件: 装備名 → (エンチャント名 → 付けるのに要る★)
+				trans: new Map(Object.entries(j.trans || {}).map(([k, v]) => [normName(k), new Map(Object.entries(v).map(([i, t]) => [names[i], t]))])),
+			};
 		}
 	} catch { /* 読めなければらとりおのデータのまま */ }
-	if (!official) official = { names: new Set(), items: new Map() };
+	if (!official) official = { names: new Set(), items: new Map(), trans: new Map() };
 	enchDetailCache.clear();
 }
 /** 一覧1つぶん（スロットごとの [_, cardId, params] の配列）から、公式に無いものを外す */
@@ -494,6 +498,18 @@ function officialFilter(itemId, slots) {
 		const n = normName(cardName(e[1]));
 		return !official.names.has(n) || allowed.has(n) || PLAIN_STAT.test(n);
 	}));
+}
+/** そのエンチャントをその装備に付けるのに要る超越段階（公式の情報。条件が無ければ0）. らとりおのデータには超越の条件が無い */
+export function enchTransNeed(itemId, cardId) {
+	return official?.trans.get(normName(itemName(itemId)))?.get(normName(cardName(cardId))) || 0;
+}
+/** その装備で、超越の条件があるエンチャントの段階の一覧 */
+function enchTransLevels(itemId, cids) {
+	const m = official?.trans.get(normName(itemName(itemId)));
+	if (!m) return [];
+	const set = new Set();
+	for (const cid of cids) { const t = m.get(normName(cardName(cid))); if (t > 0 && t <= MAX_TRANS) set.add(t); }
+	return [...set];
 }
 export function enchantDetailOf(itemId) {
 	if (enchDetailCache.has(itemId)) return enchDetailCache.get(itemId);
@@ -749,12 +765,12 @@ async function searchInner(opt, ctl) {
 		});
 		if (list.length) keepSlots.set(r.key, list);
 	}
-	const keepOk = (r, iid, lv) => {
+	const keepOk = (r, iid, lv, t = 0) => {
 		const list = keepSlots.get(r.key);
 		if (!list) return true;
 		const n = itemSlotCount(iid);
 		const detail = enchantDetailOf(iid);
-		return list.every(([, cid, isCard, i]) => isCard ? i < n : i >= n && detail[i]?.has(cid) && detail[i].get(cid) <= lv);
+		return list.every(([, cid, isCard, i]) => isCard ? i < n : i >= n && detail[i]?.has(cid) && detail[i].get(cid) <= lv && enchTransNeed(iid, cid) <= t);
 	};
 	/** 装備を置く（固定したカード・エンチャントは残す） */
 	const place = (m, r, iid, lv, t = 0) => {
@@ -893,10 +909,11 @@ async function searchInner(opt, ctl) {
 
 	const regionVariants = [];
 	const regionCtx = [];
-	const slotChoicesFor = async (ctx, iid, lv) => {
+	const slotChoicesFor = async (ctx, iid, lv, t = 0) => {
 		const nSlot = itemSlotCount(iid);
 		const detail = enchantDetailOf(iid);
-		const ench = enchOf(iid).map((a, s) => a.filter((cid) => (detail[s].get(cid) ?? 0) <= lv));
+		// 精錬値と超越段階の条件を満たすエンチャントだけ
+		const ench = enchOf(iid).map((a, s) => a.filter((cid) => (detail[s].get(cid) ?? 0) <= lv && enchTransNeed(iid, cid) <= t));
 		const out = [];
 		const kept = new Set((keepSlots.get(ctx.r.key) || []).map((x) => x[0]));
 		for (let s = 0; s < 4; s++) {
@@ -1036,7 +1053,7 @@ async function searchInner(opt, ctl) {
 				const refPrice = moved ? refineIndex(t0, lv0) - refineIndex(curT, curLv) : 0;
 				const nSlot = itemSlotCount(curItem);
 				const curDetail = enchantDetailOf(curItem);
-				const ench = enchOf(curItem).map((a, s) => a.filter((cid) => (curDetail[s].get(cid) ?? 0) <= lv0));
+				const ench = enchOf(curItem).map((a, s) => a.filter((cid) => (curDetail[s].get(cid) ?? 0) <= lv0 && enchTransNeed(curItem, cid) <= t0));
 				const slotChoices = [];
 				for (let s = 0; s < 4; s++) {
 					const opts = [];
@@ -1095,10 +1112,12 @@ async function searchInner(opt, ctl) {
 				: selfRel ? refineLevelsOf(r, iid, rel.code)
 				: [...new Set([0, ...enchantDetailOf(iid).flatMap((mm) => [...mm.values()])])].filter((v) => (v <= MAX_REFINE && r.refine && v >= 4) || v === 0).sort((a, b) => a - b);
 			// 超越段階: 精錬値を固定した部位は今の段階のまま。そうでなければ★0と、効果に「超越◯段階以上」の条件がある段階
-			const transList = L[r.key].refine ? [getTrans(base, r)] : [0, ...(selfRel ? transLevelsOf(r, iid, rel.code) : [])];
+			// （目標に関係するエンチャントに超越の条件がある装備も、その段階を試す）
+			const transList = L[r.key].refine ? [getTrans(base, r)]
+				: [...new Set([0, ...(selfRel ? transLevelsOf(r, iid, rel.code) : []), ...(r.refine && r.refine !== "shadow" ? enchTransLevels(iid, enchOf(iid).flat()) : [])])].sort((a, b) => a - b);
 			let prevD = null, prevEnch = -1;
 			for (const [t, lv] of transList.flatMap((t) => levels.map((lv) => [t, lv]))) {
-				if (!keepOk(r, iid, lv)) continue;
+				if (!keepOk(r, iid, lv, t)) continue;
 				let d = clearedD;
 				act(() => `${r.label}  ${itemName(iid)} ${t ? "★" + t + " " : ""}+${lv}  ${done}/${totalWork}`);
 				if (selfRel || hasKeep) {
@@ -1106,7 +1125,7 @@ async function searchInner(opt, ctl) {
 					place(m, r, iid, lv, t);
 					d = vecFrom(await evalM(m, skRef(relSk?.item(iid), clearedVal)), baseVal);
 				}
-				const slotChoices = await slotChoicesFor(ctx, iid, lv);
+				const slotChoices = await slotChoicesFor(ctx, iid, lv, t);
 				// 前の精錬値と装備の効果も付けられる物とその効果も同じなら、精錬値を上げる意味は無い
 				const nEnch = JSON.stringify(slotChoices.map((o) => o.map((x) => [x.id, x.d.map((y) => Math.round(y * 1000))])));
 				if (prevD && nEnch === prevEnch && d.every((x, i) => Math.abs(x - prevD[i]) < 1e-9)) continue;
