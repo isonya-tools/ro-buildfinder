@@ -85,6 +85,22 @@ function liveOpts(def) {
 	return lv;
 }
 
+/** def の候補ごとに、増える目標・減る目標の番号（枠の探索で、今の足りない分に関係ない候補を外すのに使う） */
+const signCache = new WeakMap();
+function signsOf(def) {
+	let sg = signCache.get(def);
+	if (sg) return sg;
+	const K = def.mx.length;
+	const pos = [], neg = new Uint8Array(K);
+	for (const o of def.opts) {
+		const p = [];
+		for (let k = 0; k < K; k++) { if (o.d[k] > 1e-9) p.push(k); else if (o.d[k] < -1e-9) neg[k] = 1; }
+		pos.push(p);
+	}
+	signCache.set(def, sg = { pos, neg });
+	return sg;
+}
+
 export function solveFill(groups, D, need, o = {}) {
 	const { want = 3, musts = [], cap = 3e6, stop = null, cardSets = [], stats = null, ax = null } = o;
 	const K = D.length, G = groups.length;
@@ -198,6 +214,28 @@ export function solveFill(groups, D, need, o = {}) {
 	const baseStarts = [Float64Array.from(W.map((x) => x || 0)), Float64Array.from(sc, (x) => 1 / x)];
 	let lamSet = [], lamPre = [], lamD = [];
 
+	// 今の足りない分に効かない候補は試さない（その枠に入れても、入れない選び方に負けない候補だけ残す）。
+	// 効く目標 = 足りない目標・ASPD の内訳・どれかの候補が下げる目標（下げた分を補う候補が要るため）。セットの上乗せを運ぶ候補は常に残す
+	const useful = new Uint8Array(K);
+	for (let k = 0; k < K; k++) if (D[k] > 1e-9) useful[k] = 1;
+	if (ax) { useful[ax.iA] = 1; useful[ax.iP] = 1; useful[ax.iF] = 1; }
+	const liveG = [], liveByDef = new Map();
+	for (const gr of groups) { const sg = signsOf(gr.def); for (let k = 0; k < K; k++) if (sg.neg[k]) useful[k] = 1; }
+	// 「どれかの枠は必ず変える」範囲の枠は、効かない候補でも入れる必要があるので絞らない
+	const mustG = new Uint8Array(G);
+	for (const [a, b] of musts) for (let g = a; g < b; g++) mustG[g] = 1;
+	for (let gi = 0; gi < G; gi++) {
+		const gr = groups[gi];
+		if (mustG[gi]) { liveG.push(liveOpts(gr.def).reps); continue; }
+		let lv = liveByDef.get(gr.def);
+		if (!lv) {
+			const sg = signsOf(gr.def), opts = gr.def.opts;
+			lv = liveOpts(gr.def).reps.filter((oi) => oi === 0 || opts[oi].sets?.length || sg.pos[oi].some((k) => useful[k]));
+			liveByDef.set(gr.def, lv);
+		}
+		liveG.push(lv);
+	}
+
 	const pick = new Int32Array(G);
 	const stack = Array.from({ length: G + 1 }, () => new Float64Array(K));
 	const stackU = Array.from({ length: G + 1 }, () => new Float64Array(K));
@@ -277,7 +315,7 @@ export function solveFill(groups, D, need, o = {}) {
 		if (R > 1e-9 && pre(topP[g], r) < R - 1e-9) return;
 		if (ax && aspdUpper(ax.a + su[ax.iA] + pre(tk[ax.iA], r), ax.p + su[ax.iP] + pre(tk[ax.iP], r), ax.f + su[ax.iF] + pre(tk[ax.iF], r)) < ax.T - 1e-9) return;
 		for (let l = 0; l < lamSet.length; l++) { const lam = lamSet[l]; let x = lamD[l]; for (let k = 0; k < K; k++) x -= lam[k] * su[k]; if (x > 1e-9 && pre(lamPre[l][g], r) < x - 1e-9) return; }
-		const gr = groups[g], opts = gr.def.opts, live = liveOpts(gr.def).reps;
+		const gr = groups[g], opts = gr.def.opts, live = liveG[g];
 		const same = g > 0 && groups[g - 1].def === gr.def;
 		const from = same ? pick[g - 1] : 0;
 		const nx = stack[g + 1], nu = stackU[g + 1];
