@@ -612,10 +612,10 @@ async function searchInner(opt, ctl) {
 	if (shouldStop()) throw new BfStopped();
 	// 全体の進み具合: 候補の確認 0〜75%、組み合わせ探し（見つけたものはその場で実計算して確かめる）75〜100%
 	let phase = [0, 0.75];
-	// 上限時間があるときは、実際の進み具合と経過時間の割合の大きい方を出す（上限で100%になる）
+	// 上限時間があるときは、経過時間の割合をそのまま出す（上限で100%。実際の進み具合は前半で9割近くまで跳ねて、そこで長く止まって見えるため）
 	let timeLimited = false, lastText = "";
 	const elapsedRatio = () => (timeLimited ? Math.min(1, (performance.now() - tStart) / LIMIT_MS) : 0);
-	const onProgress = (text, r) => { lastText = text; report(text, Math.max(elapsedRatio(), Math.min(1, phase[0] + (phase[1] - phase[0]) * Math.max(0, Math.min(1, r))))); };
+	const onProgress = (text, r) => { lastText = text; report(text, timeLimited ? elapsedRatio() : Math.min(1, phase[0] + (phase[1] - phase[0]) * Math.max(0, Math.min(1, r)))); };
 	const overTime = () => timeLimited && performance.now() - tStart > LIMIT_MS;
 	let timedOut = false;
 	const base = opt.base ? cloneModel(opt.base) : modelFromScreen();
