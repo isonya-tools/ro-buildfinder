@@ -69,7 +69,8 @@ function spPairs(row, from) {
 	const out = [];
 	if (!row) return out;
 	for (let i = from; i + 1 < row.length; i += 2) {
-		const code = row[i];
+		// 超越段階・装備部位の条件付きの効果（BigInt）は、条件を外した中身の効果で見る
+		const code = typeof row[i] === "bigint" ? Number(row[i] % 10000000000000000n) : row[i];
 		if (typeof code !== "number" || code === 0) break;
 		out.push([code, row[i + 1]]);
 	}

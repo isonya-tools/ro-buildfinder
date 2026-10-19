@@ -143,8 +143,9 @@ function refineLevelsOf(r, iid, codeOk = null) {
 	const set = new Set([0]);
 	const row = ItemObjNew[iid] || [];
 	for (let i = 11; i + 1 < row.length; i += 2) {
-		const code = row[i];
-		if (typeof code !== "number" || code === 0) break;
+		// 超越の条件付きの効果（BigInt）は、条件を外した中身の効果で精錬値の条件を見る
+		const code = spInner(row[i]);
+		if (code == null || code === 0) break;
 		if (codeOk && !codeOk(code)) continue;
 		const x = code % 100000000;
 		const over = Math.floor(x / 1000000);
@@ -159,12 +160,40 @@ function refineLevelsOf(r, iid, codeOk = null) {
 	return out;
 }
 
-/** 部位に装備を置く（カード・エンチャは外し、精錬値は指定値） */
-function placeItem(m, r, iid, refine) {
+/** 超越の条件のフラグ（ITEM_SP_TRANSCENDENCE_1 の倍数）. アイテムの効果コードがこれ以上なら「超越◯段階以上で」の効果 */
+const TRANS_FLAG = 10000000000000000n;
+/** 効果コードの中身（超越の条件を外した数）。数でも BigInt でもないときは null */
+function spInner(code) {
+	if (typeof code === "number") return code;
+	if (typeof code === "bigint") return Number(code % TRANS_FLAG);
+	return null;
+}
+/**
+ * 入れ替える装備で試す超越段階: 効果に「超越◯段階以上」の条件があるときだけ、その段階（目標に関係する効果だけ見るときは codeOk で絞る）。
+ * 超越できない部位（アクセサリー・シャドウ等）は無し
+ */
+function transLevelsOf(r, iid, codeOk = null) {
+	if (!r.refine || r.refine === "shadow") return [];
+	const set = new Set();
+	const row = ItemObjNew[iid] || [];
+	for (let i = 11; i + 1 < row.length; i += 2) {
+		const code = row[i];
+		if (code == null || code === 0) break;
+		if (typeof code !== "bigint" || code < TRANS_FLAG) continue;
+		const t = Number(code / TRANS_FLAG);
+		if (t < 1 || t > MAX_TRANS) continue;
+		if (codeOk && !codeOk(Number(code % TRANS_FLAG))) continue;
+		set.add(t);
+	}
+	return [...set].sort((a, b) => a - b);
+}
+/** 部位に装備を置く（カード・エンチャは外し、精錬値・超越段階は指定値） */
+function placeItem(m, r, iid, refine, trans = 0) {
 	clearRegion(m, r);
 	setRegionItem(m, r, iid);
 	if (r.key === "weapon") m.weapon.type = ItemObjNew[iid][IDX_KIND];
 	setRefine(m, r, refine);
+	if (trans) setTrans(m, r, trans);
 }
 /** 部位を空にしたモデル（固定装備の「外す」用） */
 export function withoutRegion(model, r) {
@@ -570,13 +599,25 @@ export function isTwoHanded(itemId) {
  *   onProgress(text, ratio) / onResults(results)（途中経過。良い順） / shouldStop() / priceOf(kind, id)
  */
 export async function search(opt) {
+	const ctl = { timer: 0 };
+	try { return await searchInner(opt, ctl); } finally { clearInterval(ctl.timer); }
+}
+/** 4部位以上を入れ替えて探すときの探索の上限時間（ユーザー指定 3分）。進捗バーは遅くともこの時間で100%になるように進める */
+const LIMIT_PARTS = 4, LIMIT_MS = 180000;
+async function searchInner(opt, ctl) {
+	const tStart = performance.now();
 	const { conds, skillLv = {}, lock = {}, ngItems = [], ngCards = [], maxResults = 30, onProgress: report = () => {}, onActivity = () => {}, onResults = () => {}, shouldStop = () => false, priceOf = () => null } = opt;
 	await Promise.all([loadHard(), loadOfficial(), loadExclude()]);
 	// 読み込み中に止められていたら、ここで終える（共有の状態を書き換えない）
 	if (shouldStop()) throw new BfStopped();
 	// 全体の進み具合: 候補の確認 0〜75%、組み合わせ探し（見つけたものはその場で実計算して確かめる）75〜100%
 	let phase = [0, 0.75];
-	const onProgress = (text, r) => report(text, Math.min(1, phase[0] + (phase[1] - phase[0]) * Math.max(0, Math.min(1, r))));
+	// 上限時間があるときは、実際の進み具合と経過時間の割合の大きい方を出す（上限で100%になる）
+	let timeLimited = false, lastText = "";
+	const elapsedRatio = () => (timeLimited ? Math.min(1, (performance.now() - tStart) / LIMIT_MS) : 0);
+	const onProgress = (text, r) => { lastText = text; report(text, Math.max(elapsedRatio(), Math.min(1, phase[0] + (phase[1] - phase[0]) * Math.max(0, Math.min(1, r))))); };
+	const overTime = () => timeLimited && performance.now() - tStart > LIMIT_MS;
+	let timedOut = false;
 	const base = opt.base ? cloneModel(opt.base) : modelFromScreen();
 	// 装備を外した部位に残ったカード・エンチャントも、らとりおの計算では効いてしまうので外しておく
 	for (const r of BF_REGIONS) if (!r.shadow && isRegionEmpty(base, r)) for (const s of r.slots) if (s >= 0) base.card[s] = 0;
@@ -682,6 +723,15 @@ export async function search(opt) {
 		const x = r.shadow ? { item: true, refine: true, card: true, ench: true } : lock[r.key] || {};
 		return [r.key, { item: !!x.item, refine: !!x.refine, card: !!x.card, ench: !!x.ench, fill: !!x.fill }];
 	}));
+	// 装備を入れ替える部位が4つ以上なら、探索は上限時間まで
+	{
+		const free = BF_REGIONS.filter((r) => !r.shadow && !L[r.key].item).length;
+		if (free >= LIMIT_PARTS) {
+			timeLimited = true;
+			onActivity(`装備を入れ替える部位が${free}か所あるので、探索は最大${LIMIT_MS / 60000}分で打ち切ります`, -2);
+			ctl.timer = setInterval(() => report(lastText, Math.max(elapsedRatio(), 0)), 500);
+		}
+	}
 	// 二刀流（左手に武器）のときは盾を付けられない。盾の部位は探さず、両手武器も出さない
 	const nitou = Number(base.weapon?.weapon2Type ?? 0) !== 0;
 	// 両手武器を固定しているときも盾は付けられない
@@ -707,8 +757,8 @@ export async function search(opt) {
 		return list.every(([, cid, isCard, i]) => isCard ? i < n : i >= n && detail[i]?.has(cid) && detail[i].get(cid) <= lv);
 	};
 	/** 装備を置く（固定したカード・エンチャントは残す） */
-	const place = (m, r, iid, lv) => {
-		placeItem(m, r, iid, lv);
+	const place = (m, r, iid, lv, t = 0) => {
+		placeItem(m, r, iid, lv, t);
 		for (const [slot, cid] of keepSlots.get(r.key) || []) m.card[slot] = cid;
 	};
 	const keepItem = BF_REGIONS.filter((r) => L[r.key].item).map((r) => r.key);
@@ -1044,14 +1094,16 @@ export async function search(opt) {
 			const levels = L[r.key].refine ? [getRefine(base, r)]
 				: selfRel ? refineLevelsOf(r, iid, rel.code)
 				: [...new Set([0, ...enchantDetailOf(iid).flatMap((mm) => [...mm.values()])])].filter((v) => (v <= MAX_REFINE && r.refine && v >= 4) || v === 0).sort((a, b) => a - b);
+			// 超越段階: 精錬値を固定した部位は今の段階のまま。そうでなければ★0と、効果に「超越◯段階以上」の条件がある段階
+			const transList = L[r.key].refine ? [getTrans(base, r)] : [0, ...(selfRel ? transLevelsOf(r, iid, rel.code) : [])];
 			let prevD = null, prevEnch = -1;
-			for (const lv of levels) {
+			for (const [t, lv] of transList.flatMap((t) => levels.map((lv) => [t, lv]))) {
 				if (!keepOk(r, iid, lv)) continue;
 				let d = clearedD;
-				act(() => `${r.label}  ${itemName(iid)} +${lv}  ${done}/${totalWork}`);
+				act(() => `${r.label}  ${itemName(iid)} ${t ? "★" + t + " " : ""}+${lv}  ${done}/${totalWork}`);
 				if (selfRel || hasKeep) {
 					const m = cloneModel(cleared);
-					place(m, r, iid, lv);
+					place(m, r, iid, lv, t);
 					d = vecFrom(await evalM(m, skRef(relSk?.item(iid), clearedVal)), baseVal);
 				}
 				const slotChoices = await slotChoicesFor(ctx, iid, lv);
@@ -1061,8 +1113,8 @@ export async function search(opt) {
 				prevD = d; prevEnch = nEnch;
 				if (!relevantR(toR(d)) && !slotChoices.some((o) => o.length)) continue;
 				// 同じ性能なら精錬値の低い方が残るように、精錬値ぶんだけ値段を重くして比べる
-				const itemPrice = (priceOf("item", iid) ?? UNKNOWN_PRICE) + lv;
-				variants.push({ region: r, keep: false, itemId: iid, refine: lv, selfRel, cards: [], groups: groupsFor(ctx, slotChoices, "i" + iid, needR), d, price: itemPrice, count: 1, changed: 1, twoHand: r.key === "weapon" && isTwoHanded(iid), usesShield: r.key === "shield" });
+				const itemPrice = (priceOf("item", iid) ?? UNKNOWN_PRICE) + refineIndex(t, lv);
+				variants.push({ region: r, keep: false, itemId: iid, refine: lv, trans: t, selfRel, cards: [], groups: groupsFor(ctx, slotChoices, "i" + iid, needR), d, price: itemPrice, count: 1, changed: 1, twoHand: r.key === "weapon" && isTwoHanded(iid), usesShield: r.key === "shield" });
 			}
 			return variants;
 		}, CONC);
@@ -1238,7 +1290,7 @@ export async function search(opt) {
 		for (const v of picks) {
 			if (!v.changed) continue;
 			const r = v.region;
-			if (!v.keep) place(m, r, v.itemId, v.refine ?? 0);
+			if (!v.keep) place(m, r, v.itemId, v.refine ?? 0, v.trans ?? 0);
 			else if (v.setRefine != null) { setRefine(m, r, v.setRefine); setTrans(m, r, v.setTrans ?? 0); }
 			for (const [slot, cid] of v.cards) m.card[slot] = cid;
 		}
@@ -1250,7 +1302,7 @@ export async function search(opt) {
 		if (seen.has(sig)) return;
 		seen.add(sig);
 		// 既に見つかった構成に物を足しただけのものは出さない
-		const toks = picks.filter((v) => v.changed).flatMap((v) => [...(v.keep ? (v.setRefine != null ? [`${ACC_SIDE[v.region.key] || v.region.key}:r${v.setRefine}t${v.setTrans ?? 0}`] : []) : [`${ACC_SIDE[v.region.key] || v.region.key}:i${v.itemId}:${v.refine ?? 0}`]), ...v.cards.map(([, cid]) => `${ACC_SIDE[v.region.key] || v.region.key}:c${cid}`)]).sort();
+		const toks = picks.filter((v) => v.changed).flatMap((v) => [...(v.keep ? (v.setRefine != null ? [`${ACC_SIDE[v.region.key] || v.region.key}:r${v.setRefine}t${v.setTrans ?? 0}`] : []) : [`${ACC_SIDE[v.region.key] || v.region.key}:i${v.itemId}:${v.refine ?? 0}${v.trans ? "t" + v.trans : ""}`]), ...v.cards.map(([, cid]) => `${ACC_SIDE[v.region.key] || v.region.key}:c${cid}`)]).sort();
 		if (results.some((x) => within(x.toks, toks))) return;
 		// まず本体の計算だけで、スキル以外の条件を満たすか確かめる（スキルの計算は重いので後回し）
 		if (skills.length) {
@@ -1316,7 +1368,7 @@ export async function search(opt) {
 		const exec = async (t) => {
 			if (workers) {
 				for (let tries = 0; ; tries++) {
-					try { return await pool.run("dfs", { prefix: t.prefix, ms: t.prefix.length >= n ? 0 : TASK_MS }); } catch (e) {
+					try { return await pool.run("dfs", { prefix: t.prefix, ms: taskMs(t) }); } catch (e) {
 						if (e instanceof pool.CancelError) throw new BfStopped();
 						// Worker が落ちたときは、作り直した Worker に同じ仕事を出し直す
 						if (e instanceof pool.WorkerCrash && tries < 5) { onActivity(`[${clock()}] 計算スレッドが落ちたので作り直して出し直します（${pool.lastError()}）`, -2); continue; }
@@ -1325,8 +1377,10 @@ export async function search(opt) {
 				}
 			}
 			await tick();
-			return dfsTask(ctx, t.prefix, t.prefix.length >= n ? 0 : TASK_MS);
+			return dfsTask(ctx, t.prefix, taskMs(t));
 		};
+		// 装備が全部決まった組（枠の当てはめだけ）は時間で区切らない。ただし上限時間があるときは残り時間まで
+		const taskMs = (t) => (t.prefix.length >= n ? (timeLimited ? Math.max(1, LIMIT_MS - (performance.now() - tStart)) : 0) : TASK_MS);
 		const capN = workers ? pool.poolSize() * 2 : 1;
 		let active = 0, failed = null, created = 1, finishedTasks = 0, aborts = 0;
 		let cappedN = 0;
@@ -1340,7 +1394,8 @@ export async function search(opt) {
 			const pump = () => {
 				if (failed) { if (!active) resolve(); return; }
 				if (shouldStop()) failed = new BfStopped();
-				while (!failed && active < capN && taskQ.length && !finished()) {
+				if (taskQ.length && !finished() && overTime()) timedOut = true;
+				while (!failed && !timedOut && active < capN && taskQ.length && !finished()) {
 					const t = taskQ.pop();
 					active++;
 					exec(t).then(async (r) => {
@@ -1363,7 +1418,7 @@ export async function search(opt) {
 						if (performance.now() - lastProg > 200) lastProg = performance.now();
 					}).catch((e) => { failed = failed || e; }).finally(() => { active--; pump(); });
 				}
-				if (!active && (failed || !taskQ.length || finished())) resolve();
+				if (!active && (failed || timedOut || !taskQ.length || finished())) resolve();
 			};
 			pump();
 		});
@@ -1378,7 +1433,7 @@ export async function search(opt) {
 			const parts = [];
 			for (let j = 0; j < idx.length; j++) {
 				const v = LV[j][idx[j]];
-				if (v.changed) parts.push(`${v.region.label} ${itemName(v.itemId)}${v.refine ? "+" + v.refine : ""}${v.cards.length ? "(" + v.cards.map(([, c]) => cardName(c)).join("・") + ")" : ""}${v.groups.length ? " 枠" + v.groups.length : ""}`);
+				if (v.changed) parts.push(`${v.region.label} ${itemName(v.itemId)}${v.trans ? " ★" + v.trans : ""}${v.refine ? "+" + v.refine : ""}${v.cards.length ? "(" + v.cards.map(([, c]) => cardName(c)).join("・") + ")" : ""}${v.groups.length ? " 枠" + v.groups.length : ""}`);
 			}
 			onActivity(`${idx.length}/${n} ${parts.length > 3 ? "… / " : ""}${parts.slice(-3).join(" / ") || "(変更なし)"}`, r.lane ?? 0);
 		}
@@ -1442,6 +1497,7 @@ export async function search(opt) {
 		await searchLevel();
 		say(feasFound ? `${budget}か所で、足し算の見込み上は届く構成が見つかりました。ここから値段順に詰めます` : `${budget}か所では、枠まで含めて全部調べましたが届く構成はありませんでした`);
 		if (feasFound) { firstBudget = budget; break; }
+		if (timedOut) break;
 	}
 	feasMode = false;
 	await flush();
@@ -1456,9 +1512,10 @@ export async function search(opt) {
 		await flush();
 		say(`${budget}か所の探索を終えました（実計算で確認した構成 ${foundCount}件、結果 ${results.length}件）`);
 		if (finished()) break;
+		if (timedOut) { say(`上限時間（${LIMIT_MS / 60000}分）になったので探索を終えます`); break; }
 	}
 	emit(true);
-	return { results, baseVal, base, candidates: foundCount, stats: { unreachable, items: regionItems.reduce((a, l) => a + l.length, 0), cards: regionCards.reduce((a, l) => a + l.length, 0), sets: sets.length, packages: pkgCount } };
+	return { results, baseVal, base, candidates: foundCount, stats: { unreachable, items: regionItems.reduce((a, l) => a + l.length, 0), cards: regionCards.reduce((a, l) => a + l.length, 0), sets: sets.length, packages: pkgCount, timedOut } };
 }
 
 /**
@@ -1470,6 +1527,8 @@ function pickPrice(v, priceOf) {
 	let price = 0, unknown = 0;
 	const ench = v.cards.filter(([, cid]) => isEnchant(cid)).map(([, cid]) => cid);
 	if (!v.keep) {
+		// 超越した装備は取引データで区別できないので、超越の分は値段不明に数える（装備自体の値段は入れる）
+		if (v.trans) unknown++;
 		// 精錬値・エンチャントが合う取引の値段。精錬なし・エンチャなしなら装備だけの値段
 		let p = (ench.length || v.refine) ? priceOf("itemEnch", v.itemId, ench, v.refine || 0) : null;
 		if (p == null && !v.refine) p = priceOf("item", v.itemId);

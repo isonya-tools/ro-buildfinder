@@ -829,7 +829,9 @@ async function runSearch() {
 		lastResults = { ...res, conds };
 		const sec = Math.round((performance.now() - t0) / 1000);
 		const why = res.stats?.unreachable?.length ? `。どう組み合わせても届かない条件: ${res.stats.unreachable.join("、")}` : "";
-		progressBox.textContent = res.results.length ? `${res.results.length}件見つかりました（${sec}秒）` : `条件を満たす構成は見つかりませんでした（${sec}秒）${why}`;
+		progressBox.textContent = res.results.length ? `${res.results.length}件見つかりました（${sec}秒）` : `条件を満たす構成は見つかりませんでした（${sec}秒）${why}`
+		// 上限時間で打ち切ったときは、全部は確かめられていないことを知らせる
+		if (res.stats?.timedOut) progressBox.textContent += "。固定装備が少ないため、上限時間（3分）内にすべての組み合わせを確認できませんでした";
 		renderResults();
 	} catch (e) {
 		if (token.stop) return;
