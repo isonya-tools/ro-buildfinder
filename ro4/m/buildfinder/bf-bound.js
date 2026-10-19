@@ -9,6 +9,26 @@
 
 import { isAux } from "./bf-fill.js";
 
+/**
+ * 重み（0以上）での最大値を調べるだけなら、他の候補に全目標で負ける候補（U が全部以下）は要らない。
+ * 残した候補の U だけを持つ一覧に縮める（結果は同じで、候補が桁違いに減ることがある）
+ */
+export function reduceByU(list) {
+	const K = list[0] ? list[0].U.length : 0;
+	const order = list.slice().sort((a, b) => { let x = 0, y = 0; for (let k = 0; k < K; k++) { x += a.U[k]; y += b.U[k]; } return y - x; });
+	const kept = [];
+	for (const v of order) {
+		let dom = false;
+		for (const w of kept) {
+			let ge = true;
+			for (let k = 0; k < K; k++) if (w.U[k] < v.U[k]) { ge = false; break; }
+			if (ge) { dom = true; break; }
+		}
+		if (!dom) kept.push({ U: v.U });
+	}
+	return kept;
+}
+
 /** 部位 j の候補の中で lam·U が一番大きい値（「そのまま」で0以上） */
 function bestValue(list, lam) {
 	let best = 0;
@@ -45,7 +65,7 @@ export function topSums(lam, regionVariants) {
  * @param {Float64Array[]} starts  重みの出発点
  * @returns {{lam: Float64Array, val: number}[]} 良かった順（val が小さい順）の重み
  */
-export function optimizeLambda(regionVariants, need, scale, b, starts, iters = 200) {
+export async function optimizeLambda(regionVariants, need, scale, b, starts, iters = 200, pause = null) {
 	const K = need.length, n = regionVariants.length;
 	const found = [];
 	for (const start of starts) {
@@ -58,6 +78,7 @@ export function optimizeLambda(regionVariants, need, scale, b, starts, iters = 2
 		let best = { val: Infinity, lam: Float64Array.from(lam) };
 		let eta = 0.8;
 		for (let it = 0; it < iters; it++) {
+			if (pause) await pause(); // 画面を止めないよう、ときどき順番を返す
 			// 各部位で lam·U が最大の候補
 			const arg = new Array(n), val = new Float64Array(n);
 			for (let j = 0; j < n; j++) {

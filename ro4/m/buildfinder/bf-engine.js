@@ -37,7 +37,7 @@ import { n_A_PassSkill, n_A_PassSkill4, n_A_PassSkill7, n_A_PassSkill8 } from ".
 import * as pool from "./bf-pool.js";
 import { paretoPrune, within } from "./bf-prune.js";
 import { pPlus, finishDef, solveFill, AUX_NEED, aspdOf, aspdUpper } from "./bf-fill.js";
-import { topSums, optimizeLambda } from "./bf-bound.js";
+import { topSums, optimizeLambda, reduceByU } from "./bf-bound.js";
 import { dfsTask, packBase } from "./bf-dfs.js";
 import { w_SE } from "../../../engine/equip/itemset.dat.js";
 
@@ -668,6 +668,8 @@ export async function search(opt) {
 		}
 		if (shouldStop()) throw new BfStopped();
 	};
+	// 画面を止めうる同期処理の長さを計り、0.3秒を超えたら「考えていること」に出す（原因の切り分け用）
+	const stall = (label, t0) => { const ms = performance.now() - t0; if (ms > 300) say(`画面を止めた処理: ${label} ${(ms / 1000).toFixed(1)}秒`); };
 	const vecFrom = (v, ref) => keys.map((k) => v[k] - ref[k]);
 	const relevant = (d) => d.some((x, i) => x > 1e-9 && need[i] > 0);
 	const zero = () => keys.map(() => 0);
@@ -1183,9 +1185,12 @@ export async function search(opt) {
 	const upper = (i, k, b) => { const pre = topSum[i][k]; return pre[Math.min(b, pre.length - 1)]; };
 	// いま探索に使う候補の一覧（最初は届くかどうかだけを調べる軽い一覧、次に全部）と、それに合わせた上限の準備
 	let LV = regionVariants;
+	let LVU = regionVariants; // 上限の計算に使う、U で負ける候補を除いた一覧
 	let topSumP = [], lossFrom = [];
 	const prepLists = (lists) => {
+		const tP = performance.now();
 		LV = lists;
+		LVU = lists.map(reduceByU);
 		// 目標への近さ（全目標をまとめた1つのものさし）の上限. 目標ごとの上限が届いていても、全部を合わせると届かないものを早く切る
 		const bestP = lists.map((list) => { let b = 0; for (const v of list) if (v.P > b) b = v.P; return b; });
 		topSumP = [];
@@ -1202,6 +1207,7 @@ export async function search(opt) {
 			for (let j = i; j < n; j++) for (let k = 0; k < K; k++) { let m = 0; for (const v of lists[j]) if (v.d[k] < m) m = v.d[k]; loss[k] -= m; }
 			lossFrom[i] = loss;
 		}
+		stall("候補一覧の準備", tP);
 	};
 	const upperP = (i, b) => { const pre = topSumP[i]; return pre[Math.min(b, pre.length - 1)]; };
 	// 全部の部位で一番伸びるものを選んでも届かない条件（足し算の見込み）。結果が0件のときに知らせる
@@ -1296,10 +1302,12 @@ export async function search(opt) {
 	const searchLevel = async () => {
 		const ctx = tasksCtx();
 		const workers = pool.available();
+		const tB = performance.now();
 		if (workers) {
 			if (poolBase !== LV) { pool.broadcast("dfsBase", packBase({ n, K, ax, need, W, scaleOf, LV, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom })); poolBase = LV; }
 			pool.broadcast("dfsLevel", { trail: true, LU: levelLU, budget, feas: feasMode, nL, topL, lneed });
 		}
+		stall("計算スレッドへの下準備の送信", tB);
 		// 仕事の置き場（後ろから取り出す。細かく分けた組は逆順に積んで、元の順に取り出す）
 		const taskQ = [{ prefix: [], w: 1 }];
 		let lastProg = 0;
@@ -1328,6 +1336,7 @@ export async function search(opt) {
 					const t = taskQ.pop();
 					active++;
 					exec(t).then(async (r) => {
+						const tR = performance.now();
 						nodes += r.nodes; finishedTasks++;
 						showTrail(r);
 						if (r.capped) { cappedN += r.capped; onActivity(`[${clock()}] 枠の当てはめが手数の上限（${(3e6).toLocaleString()}手）に達して打ち切った装備の組があります（累計 ${cappedN}組）。この組は結果に入っていない可能性があります`, -2, "capped"); }
@@ -1340,6 +1349,7 @@ export async function search(opt) {
 						} else doneW += t.w;
 						if (r.found) feasFound = true;
 						for (const lf of r.leaves) for (const sol of lf.sols) queue.push(buildPicks(lf.idx, sol));
+						stall("仕事の結果の取り込み", tR);
 						if (queue.length >= CONC) await flush();
 						if (performance.now() - lastProg > 200) onProgress(results.length ? `組み合わせを探しています（${results.length}件）` : "組み合わせを探しています", Math.min(0.95, (budget + Math.min(1, doneW)) / (n + 1)));
 						if (performance.now() - lastProg > 200) lastProg = performance.now();
@@ -1385,22 +1395,24 @@ export async function search(opt) {
 	// 重み付きの上限（目標ごと・全体・最適化した重み）. 変える部位の数 b ごとに重みを求め直し、届かないと証明できたらその b は飛ばす
 	let nL = 0, topL = [], lneed = new Float64Array(0);
 	let prevLam = null, lastF = null;
-	const setupLevel = (b) => {
+	const setupLevel = async (b) => {
 		const lams = [];
 		for (let k = 0; k < K; k++) { const e = new Float64Array(K); e[k] = 1; lams.push(e); }
 		lams.push(Float64Array.from(W));
 		const starts = [Float64Array.from(scaleOf, (x) => 1 / x), Float64Array.from(W.map((x, k) => (x > 0 ? x : 0.1 / scaleOf[k])))];
 		if (prevLam) starts.push(prevLam);
-		const opt = optimizeLambda(LV, need, scaleOf, b, starts);
+		const opt = await optimizeLambda(LVU, need, scaleOf, b, starts, 200, tick);
 		lastF = opt.length ? opt[0].val : null;
 		if (opt.length && opt[0].val < -1e-6 * (1 + Math.abs(opt[0].val))) { say(`${b}か所の変更では、どう選んでも届かないと上限の計算で証明できました（余裕 ${opt[0].val.toExponential(2)}）。次へ進みます`); return false; }
 		say(`${b}か所の変更で届くかを調べます（上限の計算ではまだ届く可能性あり. 余裕 ${lastF == null ? "-" : lastF.toExponential(2)}）`);
 		for (const o of opt.slice(0, 3)) lams.push(o.lam);
 		if (opt.length) prevLam = opt[0].lam;
 		nL = lams.length;
-		topL = lams.map((lam) => topSums(lam, LV));
+		const tS = performance.now();
+		topL = lams.map((lam) => topSums(lam, LVU));
 		lneed = Float64Array.from(lams, (lam) => { let x = 0; for (let k = 0; k < K; k++) x += lam[k] * need[k]; return x; });
 		levelLU = LV.map((list) => { const lu = new Float64Array(list.length * nL); list.forEach((v, vi) => { for (let l = 0; l < nL; l++) { let x = 0; const lam = lams[l]; for (let k = 0; k < K; k++) x += lam[k] * v.U[k]; lu[vi * nL + l] = x; } }); return lu; });
+		stall("上限の表の作成", tS);
 		return true;
 	};
 	const startTwoHand = weaponLocked ? isTwoHanded(baseWeapon) : false;
@@ -1416,7 +1428,7 @@ export async function search(opt) {
 	feasMode = true;
 	let firstBudget = n + 1;
 	for (budget = 0; budget <= n; budget++) {
-		const okLevel = setupLevel(budget);
+		const okLevel = await setupLevel(budget);
 		if (!okLevel) continue;
 		feasFound = false;
 		await searchLevel();
@@ -1430,7 +1442,7 @@ export async function search(opt) {
 	prepLists(regionVariants);
 	say(`次に、全部の候補（${regionVariants.map((l) => l.length).join("/")}件）で、変更${firstBudget}か所から値段・カードの少なさの順に探します`);
 	for (budget = firstBudget; budget <= n; budget++) {
-		const okLevel = setupLevel(budget);
+		const okLevel = await setupLevel(budget);
 		if (!okLevel) continue;
 		await searchLevel();
 		await flush();
