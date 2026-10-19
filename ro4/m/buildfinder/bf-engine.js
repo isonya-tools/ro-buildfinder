@@ -272,7 +272,8 @@ function cachedAsync(map, key, type, model, local) {
 	const done = (r) => { inflight.delete(fk); if (map.size >= CACHE_MAX) map.clear(); map.set(key, r); return r; };
 	let p;
 	if (usePool) {
-		p = pool.run(type, model).then(done, (e) => {
+		const again = (e) => (e instanceof pool.WorkerCrash ? pool.run(type, model) : Promise.reject(e)); // 落ちた Worker の分は別の Worker で1回やり直す
+		p = pool.run(type, model).catch(again).then(done, (e) => {
 			inflight.delete(fk);
 			if (e instanceof pool.CancelError) throw new BfStopped();
 			// Worker で計算できなかったものは、以後この画面のスレッドで計算する
@@ -1314,7 +1315,14 @@ export async function search(opt) {
 		let doneW = 0;
 		const exec = async (t) => {
 			if (workers) {
-				try { return await pool.run("dfs", { prefix: t.prefix, ms: t.prefix.length >= n ? 0 : TASK_MS }); } catch (e) { if (e instanceof pool.CancelError) throw new BfStopped(); throw e; }
+				for (let tries = 0; ; tries++) {
+					try { return await pool.run("dfs", { prefix: t.prefix, ms: t.prefix.length >= n ? 0 : TASK_MS }); } catch (e) {
+						if (e instanceof pool.CancelError) throw new BfStopped();
+						// Worker が落ちたときは、作り直した Worker に同じ仕事を出し直す
+						if (e instanceof pool.WorkerCrash && tries < 5) { onActivity(`[${clock()}] 計算スレッドが落ちたので作り直して出し直します（${pool.lastError()}）`, -2); continue; }
+						throw e;
+					}
+				}
 			}
 			await tick();
 			return dfsTask(ctx, t.prefix, t.prefix.length >= n ? 0 : TASK_MS);
@@ -1323,7 +1331,7 @@ export async function search(opt) {
 		let active = 0, failed = null, created = 1, finishedTasks = 0, aborts = 0;
 		let cappedN = 0;
 		const lvT0 = performance.now(), nodes0 = nodes;
-		say(`変更${budget}か所の探索を開始（${workers ? `${pool.poolSize()}スレッドで並列` : "この画面のスレッドのみ"}）`);
+		say(`変更${budget}か所の探索を開始（${workers ? `${pool.poolSize()}スレッドで並列（この端末の論理コア ${navigator.hardwareConcurrency || "不明"}）` : "この画面のスレッドのみ"}）`);
 		const hb = setInterval(() => {
 			const sec = (performance.now() - lvT0) / 1000;
 			onActivity(`[${clock()}] 変更${budget}か所 ｜ 探索済み 約${(Math.min(1, doneW) * 100).toFixed(1)}% ｜ 仕事 ${finishedTasks}/${created}（分け直し ${aborts}回、待ち ${taskQ.length}） ｜ ${(nodes - nodes0).toLocaleString()}手（毎秒 ${Math.round((nodes - nodes0) / Math.max(sec, 0.1)).toLocaleString()}） ｜ 確認待ち ${queue.length}件 ｜ 結果 ${results.length}件`, -3);
