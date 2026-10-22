@@ -1371,6 +1371,8 @@ async function searchInner(opt, ctl) {
 	const TASK_MS = 300;
 	const tasksCtx = () => ({ trail: true, n, K, ax, need, W, scaleOf, LV, LU: levelLU, cardSets, FILL_WANT, shieldLocked, baseShield, startTwoHand, topSumP, lossFrom, failMemo, budget, feas: feasMode, nL, topL, lneed });
 	let levelLU = [];
+	// 終わったあとに画面へ出す集計（最後に探した変更か所数と、その探索済みの割合、枠の当てはめの打ち切り累計）
+	const tally = { budget: 0, explored: 0, capped: 0 };
 	const searchLevel = async () => {
 		const ctx = tasksCtx();
 		const workers = pool.available();
@@ -1442,6 +1444,7 @@ async function searchInner(opt, ctl) {
 			pump();
 		});
 		clearInterval(hb);
+		tally.budget = budget; tally.explored = Math.min(1, doneW); tally.capped += cappedN;
 		if (failed) throw failed;
 	};
 	let poolBase = null;
@@ -1534,7 +1537,7 @@ async function searchInner(opt, ctl) {
 		if (timedOut) { say(`上限時間（${LIMIT_MS / 60000}分）になったので探索を終えます`); break; }
 	}
 	emit(true);
-	return { results, baseVal, base, candidates: foundCount, stats: { unreachable, items: regionItems.reduce((a, l) => a + l.length, 0), cards: regionCards.reduce((a, l) => a + l.length, 0), sets: sets.length, packages: pkgCount, timedOut } };
+	return { results, baseVal, base, candidates: foundCount, stats: { unreachable, items: regionItems.reduce((a, l) => a + l.length, 0), cards: regionCards.reduce((a, l) => a + l.length, 0), sets: sets.length, packages: pkgCount, timedOut, tally } };
 }
 
 /**

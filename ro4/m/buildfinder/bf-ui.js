@@ -832,6 +832,9 @@ async function runSearch() {
 		progressBox.textContent = res.results.length ? `${res.results.length}件見つかりました（${sec}秒）` : `条件を満たす構成は見つかりませんでした（${sec}秒）${why}`
 		// 上限時間で打ち切ったときは、全部は確かめられていないことを知らせる
 		if (res.stats?.timedOut) progressBox.textContent += "。固定装備が少ないため、上限時間（3分）内にすべての組み合わせを確認できませんでした";
+		// 打ち切りがあったときは、どこまで調べたかを残す（ログ欄は終わると消えるので）
+		const tl = res.stats?.tally;
+		if (tl && (res.stats.timedOut || tl.capped)) progressBox.textContent += `（変更${tl.budget}か所の探索済み 約${(tl.explored * 100).toFixed(1)}%、枠の当てはめの打ち切り ${tl.capped}組）`;
 		renderResults();
 	} catch (e) {
 		if (token.stop) return;
