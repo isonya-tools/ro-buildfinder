@@ -253,7 +253,17 @@ function cloneModel(m) {
 
 // 計算結果の使い回し（同じ入力なら計算しない）。条件だけ変えて検索し直すときに効く
 const coreCache = new Map(), skillCache = new Map();
-const CACHE_MAX = 60000; // キーはモデル全体のJSON（大きい）なので、多く持つとメモリが足りなくなる
+const CACHE_MAX = 60000;
+/** キーはモデル全体のJSON（約5KB）なので、そのままだと上限まで貯めたときにメモリを食う。2つの32ビットのハッシュ＋長さに縮める */
+function hashKey(str) {
+	let a = 0x811c9dc5, b = 0x1b873593;
+	for (let i = 0; i < str.length; i++) {
+		const c = str.charCodeAt(i);
+		a = Math.imul(a ^ c, 16777619);
+		b = Math.imul(b + c, 2246822519) ^ (b >>> 13);
+	}
+	return (a >>> 0).toString(36) + (b >>> 0).toString(36) + str.length.toString(36);
+}
 function cached(map, key, fn) {
 	let v = map.get(key);
 	if (v === undefined) {
@@ -271,14 +281,14 @@ function screenState() {
 }
 /** 基本の指標（耐性・ASPDなど）。使い回しは画面側の状態も同じときだけ */
 export function evalModel(model) {
-	return cached(coreCache, JSON.stringify(screenState()) + JSON.stringify(model), () => readMetrics(registryGet("calcCoreFromModel")(model)));
+	return cached(coreCache, hashKey(JSON.stringify(screenState()) + JSON.stringify(model)), () => readMetrics(registryGet("calcCoreFromModel")(model)));
 }
 
 /** スキルの固定詠唱・CT（ミリ秒） */
 export function skillTimes(model, skillId, lv) {
 	const m = cloneModel(model);
 	m.attackMethod = { skillId, sourceType: 0, skillLv: lv, optionValueArray: [] };
-	return cached(skillCache, JSON.stringify(screenState()) + JSON.stringify(m), () => {
+	return cached(skillCache, hashKey(JSON.stringify(screenState()) + JSON.stringify(m)), () => {
 		// 戦闘計算は遠距離かどうか（n_Enekyori）をそのスキルの値に書き換えるので、画面の値に戻しておく
 		const ene = n_Enekyori;
 		try {
@@ -315,13 +325,13 @@ function cachedAsync(map, key, type, model, local) {
 	return p;
 }
 function evalModelAsync(model) {
-	const key = leakKey + JSON.stringify(model);
+	const key = hashKey(leakKey + JSON.stringify(model));
 	return cachedAsync(coreCache, key, "core", model, () => { if (leak) set_n_Enekyori(leak.n_Enekyori); return readMetrics(registryGet("calcCoreFromModel")(model)); });
 }
 function skillTimesAsync(model, skillId, lv) {
 	const m = cloneModel(model);
 	m.attackMethod = { skillId, sourceType: 0, skillLv: lv, optionValueArray: [] };
-	return cachedAsync(skillCache, leakKey + JSON.stringify(m), "skill", m, () => {
+	return cachedAsync(skillCache, hashKey(leakKey + JSON.stringify(m)), "skill", m, () => {
 		try {
 			const r = registryGet("calcFromModel")(m)?.activeResultArray?.[0];
 			return { cf: Math.round((r?.castFixed || 0) * 1000), ct: Math.round((r?.coolTime || 0) * 1000) };
@@ -1314,7 +1324,7 @@ async function searchInner(opt, ctl) {
 			for (const [slot, cid] of v.cards) m.card[slot] = cid;
 		}
 		// 同じ部位の中でエンチャントの並び順だけ違うもの・アクセサリーの左右が入れ替わっただけのものは同じ構成とみなす
-		const partOf = (r) => JSON.stringify([regionItem(m, r) || 0, getRefine(m, r), ...r.slots.map((s) => m.card[s] || 0).sort()]);
+		const partOf = (r) => JSON.stringify([regionItem(m, r) || 0, getRefine(m, r), getTrans(m, r), ...r.slots.map((s) => m.card[s] || 0).sort()]);
 		const part = BF_REGIONS.filter((r) => !ACC_PAIR[r.key] && !ACC_SIDE[r.key]).map(partOf);
 		for (const [a, b] of Object.entries(ACC_PAIR)) part.push([partOf(REGION_BY_KEY[a]), partOf(REGION_BY_KEY[b])].sort().join("/"));
 		const sig = part.join("|");
@@ -1333,16 +1343,19 @@ async function searchInner(opt, ctl) {
 		if (results.some((x) => within(x.toks, toks))) return;
 		for (let i = results.length - 1; i >= 0; i--) if (within(toks, results[i].toks)) results.splice(i, 1);
 		const changed = picks.filter((v) => v.changed).map((v) => ({ ...v }));
-		let price = 0, unknown = 0;
+		let price = 0, unknown = 0, weak = 0;
 		for (const v of changed) {
 			const pp = pickPrice(v, priceOf);
 			v.finalPrice = pp.price;
 			v.priceUnknown = pp.unknown;
+			v.priceWeak = pp.weak;
 			price += pp.price;
 			unknown += pp.unknown;
+			weak += pp.weak;
 		}
 		say(`実計算で確認 ○: 条件を満たす構成が見つかりました（変更${f.changes}か所）`);
-		results.push({ toks, picks: changed, values: val, price, priceUnknown: unknown, changes: f.changes, cost: f.cost, used: usedOf(m), model: m });
+		// 並べ替え・上位の切り捨てには、検索中の見積もりでなく、エンチャント・精錬込みの実際の値段を使う（値段不明は後ろ）
+			results.push({ toks, picks: changed, values: val, price, priceUnknown: unknown, priceWeak: weak, changes: f.changes, cost: price + unknown * UNKNOWN_PRICE, used: usedOf(m), model: m });
 		results.sort(order);
 		if (results.length > maxResults) results.length = maxResults;
 		emit(false);
@@ -1546,18 +1559,22 @@ async function searchInner(opt, ctl) {
  * @returns {{price: number, unknown: number}} unknown: 値段が分からなかった物の数
  */
 function pickPrice(v, priceOf) {
-	let price = 0, unknown = 0;
+	let price = 0, unknown = 0, weak = 0;
 	const ench = v.cards.filter(([, cid]) => isEnchant(cid)).map(([, cid]) => cid);
-	if (!v.keep) {
+	const mark = (kind, id, en, rf) => { if (priceOf.weak?.(kind, id, en, rf)) weak++; };
+	// 精錬値・超越が違えば別の装備として値段を見る（今の装備の値段は0z。今の装備の精錬を変える場合も、変えたあとの装備の値段を足す）
+	const refine = v.keep ? v.setRefine : v.refine, trans = v.keep ? v.setTrans : v.trans;
+	if (!v.keep || v.setRefine != null) {
 		// 超越した装備は取引データで区別できないので、超越の分は値段不明に数える（装備自体の値段は入れる）
-		if (v.trans) unknown++;
+		if (trans) unknown++;
 		// 精錬値・エンチャントが合う取引の値段。精錬なし・エンチャなしなら装備だけの値段
-		let p = (ench.length || v.refine) ? priceOf("itemEnch", v.itemId, ench, v.refine || 0) : null;
-		if (p == null && !v.refine) p = priceOf("item", v.itemId);
+		let p = (ench.length || refine) ? priceOf("itemEnch", v.itemId, ench, refine || 0) : null;
+		if (p != null) mark("itemEnch", v.itemId, ench, refine || 0);
+		if (p == null && !refine) { p = priceOf("item", v.itemId); if (p != null) mark("item", v.itemId); }
 		if (p == null && ench.length) {
 			// そのエンチャントの付いた取引が無いときは、装備（その精錬値以上）の値段だけ入れて、エンチャ分は不明にする
-			const p2 = v.refine ? priceOf("itemEnch", v.itemId, [], v.refine) : priceOf("item", v.itemId);
-			if (p2 != null) price += p2;
+			const p2 = refine ? priceOf("itemEnch", v.itemId, [], refine) : priceOf("item", v.itemId);
+			if (p2 != null) { price += p2; refine ? mark("itemEnch", v.itemId, [], refine) : mark("item", v.itemId); }
 			unknown++;
 		} else if (p == null) unknown++;
 		else price += p;
@@ -1565,9 +1582,9 @@ function pickPrice(v, priceOf) {
 	for (const [, cid] of v.cards) {
 		if (isEnchant(cid)) continue;
 		const p = priceOf("card", cid);
-		if (p == null) unknown++; else price += p;
+		if (p == null) unknown++; else { price += p; mark("card", cid); }
 	}
-	return { price, unknown };
+	return { price, unknown, weak };
 }
 
 /** 値段が分からない物は、並べるときに値段の分かる物より後ろにする */

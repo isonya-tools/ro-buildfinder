@@ -124,7 +124,8 @@ export function paretoPrune(list, need, o = {}) {
 			const ck = caps.get(k), cv = caps.get(v);
 			for (let j = 0; j < ck.length; j++) {
 				if (ck[j] < cv[j] - 1e-9) { dominated = false; break; }
-				if (ck[j] > cv[j] + 1e-9) better = true;
+				// ASPD の内訳（頭打ちにしない値）で上回るだけでは「性能で勝つ」とみなさない（目標に届く別の候補を残すため）
+				if (ck[j] > cv[j] + 1e-9 && need[idx[j]] > 0) better = true;
 			}
 			// 性能で負けているものは捨てる。性能が同じなら、中身が違うもの（同じ耐性に届く別のカードなど）は
 			// 値段が高くても別の候補として残し、中身が同じもの・余計な物を足しただけのものは捨てる

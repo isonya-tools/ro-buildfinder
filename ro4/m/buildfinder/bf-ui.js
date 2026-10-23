@@ -807,7 +807,7 @@ async function runSearch() {
 	curToken = token;
 	freezeScreen();
 	searchBtn.disabled = true; stopBtn.disabled = false;
-	resultBox.replaceChildren();
+	resultBox.replaceChildren(); lastRenderKey = "";
 	lastResults = null; openSigs.clear();
 	barMax = 0; progressBar.hidden = false; setBar(0);
 	clearLive(); liveBox.hidden = false;
@@ -941,9 +941,14 @@ function newThings(r) {
 }
 const openSigs = new Set(); // 開いている結果（作り直しても開いたままにする）
 const sigOf = (r) => JSON.stringify([r.model.equip, r.model.card, r.model.defPlus, r.model.weapon?.atkPlus, r.model.defTranscendence, r.model.weapon?.transcendence]);
+let lastRenderKey = "";
 function renderResults() {
 	if (!lastResults) return;
 	const { results } = lastResults;
+	// 検索中は0.5秒ごとに呼ばれるので、一覧が前と同じなら作り直さない（件数が多いと重い）
+	const renderKey = conf.sort + "|" + results.map((r) => sigOf(r) + r.price + "/" + r.priceUnknown).join("\n");
+	if (renderKey === lastRenderKey && resultBox.childNodes.length) return;
+	lastRenderKey = renderKey;
 	const sortSel = h("select", { onchange: () => { conf.sort = sortSel.value; saveConf(); renderResults(); } },
 		h("option", { value: "changes", selected: conf.sort === "changes" }, "変更箇所が少ない順"),
 		h("option", { value: "price", selected: conf.sort === "price" }, "値段が安い順"));
@@ -974,9 +979,10 @@ function resultRow(r, i) {
 	return row;
 }
 function priceText(r) {
-	if (!r.priceUnknown) return fmtZeny(r.price);
+	const tag = r.priceWeak ? "（目安）" : "";
+	if (!r.priceUnknown) return fmtZeny(r.price) + tag;
 	if (!r.price) return "値段不明";
-	return fmtZeny(r.price) + "＋不明" + r.priceUnknown;
+	return fmtZeny(r.price) + tag + "＋不明" + r.priceUnknown;
 }
 function resultDetail(r) {
 	const { base, baseVal } = lastResults;
@@ -999,7 +1005,7 @@ function resultDetail(r) {
 			const hit = cid !== (base.card[s] || 0);
 			return h("td", { class: hit ? "bf-hit" : "" }, cid ? [withDesc("card", cid, cardName(cid)), hit ? ngButton("card", cid) : null] : h("span", { class: "bf-zero" }, "-"));
 		});
-		const priceCell = h("td", { class: "bf-eq-price" }, pk ? (pk.priceUnknown ? (pk.finalPrice ? fmtZeny(pk.finalPrice) + "＋不明" : "不明") : fmtZeny(pk.finalPrice)) : "");
+		const priceCell = h("td", { class: "bf-eq-price" }, pk ? (pk.priceUnknown ? (pk.finalPrice ? fmtZeny(pk.finalPrice) + "＋不明" : "不明") : fmtZeny(pk.finalPrice)) + (pk.priceWeak && pk.finalPrice ? "（目安）" : "") : "");
 		table.append(h("tr", { class: changedRegions.has(reg.key) ? "bf-eq-changed" : "" }, h("th", {}, reg.label), itemCell, cardCells, priceCell));
 	}
 	const applyBtn = h("button", { type: "button", class: "bf-go bf-apply", onclick: () => {
@@ -1014,7 +1020,7 @@ function resultDetail(r) {
 		}
 	} }, "この構成を今の装備に反映");
 	return h("div", {},
-		h("div", { class: "bf-res-actions" }, applyBtn, h("span", { class: "bf-note" }, "色付きの欄が変わる所です。「除外」で除外装備に入れられます。")),
+		h("div", { class: "bf-res-actions" }, applyBtn, h("span", { class: "bf-note" }, "色付きの欄が変わる所です。「除外」で除外装備に入れられます。（目安）は取引が2件以下、または6か月以上前の値段を含みます。")),
 		table,
 		metricGroupsTable(r.values, { before: baseVal }));
 }
