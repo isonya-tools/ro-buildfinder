@@ -14,6 +14,7 @@ import { GetItemExplainText } from "../../../engine/equip/item.h.js";
 import { CardObjNew } from "../../../engine/equip/card.dat.js";
 import { loadPrices, priceOfFactory } from "./bf-price.js";
 import { applyModelToScreen } from "./bf-apply.js";
+import { track } from "./bf-ga.js";
 import { get as registryGet } from "../../../engine/runtime/engine-registry.js";
 import { ITEM_SP_TIME_OBJ } from "../../../engine/equip/timeitem.dat.js";
 import { TIME_ITEM_DATA_INDEX_NAME, TIME_ITEM_DATA_INDEX_EXPLAIN } from "../../../engine/const/EnumTimeItemDataIndex.js";
@@ -800,6 +801,8 @@ async function runSearch() {
 	const { conds, skillLv } = buildConds();
 	if (!conds.length) { progressBox.textContent = "目標を1つ以上入れてください。"; return; }
 	running = true;
+	track("bf_search", { n_conds: conds.length, max_results: conf.maxResults });
+	for (const c of conds) track("bf_cond", { cond: c.label, target: c.target, unit: c.unit || "" });
 	// 検索中は固定装備を変えられない（外すボタンを押せないようにする）
 	for (const b of regionBox.querySelectorAll("button.bf-lock")) b.disabled = true;
 	// 止めるボタンは押したその場で画面を戻す（検索の後始末は裏で終わらせ、結果は捨てる）
@@ -836,6 +839,10 @@ async function runSearch() {
 		const tl = res.stats?.tally;
 		if (tl && (res.stats.timedOut || tl.capped)) progressBox.textContent += `（変更${tl.budget}か所の探索済み 約${(tl.explored * 100).toFixed(1)}%、枠の当てはめの打ち切り ${tl.capped}組）`;
 		renderResults();
+		track("bf_search_done", { found: res.results.length, sec, timed_out: res.stats?.timedOut ? 1 : 0 });
+		// 先頭3件に出た装備・カード・エンチャントを集計用に送る
+		const top = res.results.slice().sort((a, b) => (a.changes - b.changes) || (a.price - b.price)).slice(0, 3);
+		for (const r of top) for (const t of newThings(r)) track("bf_result_pick", { kind: t.kind, name: t.label });
 	} catch (e) {
 		if (token.stop) return;
 		if (e instanceof BfStopped) progressBox.textContent = "";
@@ -967,7 +974,10 @@ function resultRow(r, i) {
 	const toggle = (open) => {
 		row.classList.toggle("open", open);
 		if (open) openSigs.add(sig); else openSigs.delete(sig);
-		if (open && !detail.childNodes.length) detail.append(resultDetail(r));
+		if (open && !detail.childNodes.length) {
+			detail.append(resultDetail(r));
+			for (const t of things) track("bf_result_open", { kind: t.kind, name: t.label });
+		}
 	};
 	if (openSigs.has(sig)) queueMicrotask(() => toggle(true));
 	const line = h("button", { type: "button", class: "bf-res-line", onclick: () => toggle(!row.classList.contains("open")) },
@@ -1012,6 +1022,7 @@ function resultDetail(r) {
 		applyBtn.disabled = true;
 		try {
 			applyModelToScreen(m, BF_REGIONS.filter((reg) => changedRegions.has(reg.key)));
+			for (const t of newThings(r)) track("bf_apply", { kind: t.kind, name: t.label });
 			applyBtn.textContent = "今の装備に反映しました";
 			setTimeout(refreshAll, 300);
 		} catch (e) {
