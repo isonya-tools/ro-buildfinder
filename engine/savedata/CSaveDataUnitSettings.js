@@ -148,7 +148,7 @@ export class CSaveDataUnitSettings extends CSaveDataUnitBase {
      */
     SetUpAsDefault() {
         super.SetUpAsDefault();
-        this.setProp(CSaveDataConst.propNameConfirmDialogSwitch, 0);
+        this.setProp(CSaveDataConst.propNameConfirmDialogSwitch, 1); // 操作時に確認する: 既定でオン
         this.setProp(CSaveDataConst.propNameResultDigit3, 0);
         this.setProp(CSaveDataConst.propNameAttackInterval, 14);
         this.setProp(CSaveDataConst.propNameCastSimInterval, 10);
