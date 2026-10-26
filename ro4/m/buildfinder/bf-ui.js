@@ -322,11 +322,11 @@ function licenseNote() {
 	return h("p", { class: "bf-license" },
 		"RO装備シミュレーター は ",
 		h("a", { href: "https://github.com/roratorio-hub/ratorio", target: "_blank", rel: "noopener" }, "ラトリオHUB"),
-		" の計算部分を使って作っています（非営利・",
-		h("a", { href: "https://polyformproject.org/licenses/noncommercial/1.0.0", target: "_blank", rel: "noopener" }, "PolyForm Noncommercial 1.0.0"),
-		"）。ラトリオ、ラトリオ避難所、データ提供者の皆さまへの謝辞と著作権表示は ",
-		h("a", { href: "../../LICENSE", target: "_blank" }, "LICENSE"), " の Required Notice を参照。値段は公式ツールの取引履歴から集計しています。",
-		" Development いそにゃ with Claude ・ ", h("a", { href: "https://isonya-tools.web.app/", target: "_blank", rel: "noopener" }, "いそにゃ開発ツール集"));
+		" の計算部分を使って作った非公式ツールです（非営利）。謝辞・著作権表示は ",
+		h("a", { href: "https://github.com/isonya-tools/ro-buildfinder/blob/sim/LICENSE", target: "_blank", rel: "noopener" }, "LICENSE"),
+		" を参照。値段は公式ツールの取引履歴から集計しています。",
+		" Developed by ", h("a", { href: "https://x.com/isonya_ro", target: "_blank", rel: "noopener" }, "@isonya_ro"),
+		" ・ ", h("a", { href: "https://isonya-tools.web.app/", target: "_blank", rel: "noopener" }, "いそにゃ開発ツール集"));
 }
 
 function refreshAll() {
