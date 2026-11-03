@@ -661,8 +661,8 @@ export function generateImage() {
       </dl>
 
       <div id="cp">
-        <div>© Gravity Co., Ltd. & Lee MyoungJin(studio DTDS). All rights reserved.</div>
-        <div>© GungHo Online Entertainment, Inc. All Rights Reserved.</div>
+        <div>Ⓒ Gravity Co., Ltd. & Lee MyoungJin(studio DTDS). All Rights Reserved.</div>
+        <div>Published by GungHo Online Entertainment, Inc.</div>
         <div>当コンテンツの再利用（再転載・配布など）は、禁止しています。</div>
       </div>
 
