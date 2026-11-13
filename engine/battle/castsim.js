@@ -55,6 +55,11 @@ import { USABLE_SKILL_DATA_INDEX_SKILL_ID } from "../const/EnumUsableSkillDataIn
 
 export function BuildUpCastSimSimulateArea(objRoot, bAsExpand) {
 
+	// 詠唱シミュレーターの欄がないページ（BuildFinder）では作らない
+	if (!objRoot) {
+		return;
+	}
+
 	var idx = 0;
 	var rowidx = 0;
 	var lv = 0;

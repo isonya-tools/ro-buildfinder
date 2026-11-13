@@ -125,6 +125,9 @@ let itemCountLeft = 0;
  * 最終的なディレイ減少率を取得する
  * @returns {Number}
  */
+// RO BuildFinder: 上限（100%）で切る前のディレイ短縮の合計（装備シミュの表示・条件用）
+export let bfDelayReductionRaw = 0;
+
 export function getDelayTimeReductionRate() {
 	var sklLv = 0, skllv = 0, itemCount = 0, itemCountAccessory1 = 0, bufLv = 0, cardCount = 0;
 	var cardCountRight = 0, cardCountLeft = 0, cardCountHeadTop = 0;
@@ -960,6 +963,7 @@ export function getDelayTimeReductionRate() {
 	// 拡張情報 > 詠唱/ディレイ 表示用に確保
 	set_delayDownForDisp(delay_time_reduction);
 
+    bfDelayReductionRaw = delay_time_reduction;
     return Math.min(100, delay_time_reduction);
 }
 
