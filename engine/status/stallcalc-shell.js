@@ -207,7 +207,13 @@ OnDomReady(async () => {
 			const optText = CSaveController.getDisplayName(idx);
 			HtmlCreateElementOption(idx, optText, objSelect);
 		}
-		// 確認ダイアログの有効化スイッチを初期化
+		// 確認ダイアログの有効化スイッチを初期化（既定はオン。以前の既定だったオフの保存値は、最初の1回だけオンに直す）
+		try {
+			if (!localStorage.getItem("confirmDialogDefaultOn")) {
+				localStorage.setItem("confirmDialogDefaultOn", "1");
+				CSaveController.setSettingProp(CSaveDataConst.propNameConfirmDialogSwitch, 1);
+			}
+		} catch { /* 保存できない環境では既定のまま */ }
 		if (CSaveController.getSettingProp(CSaveDataConst.propNameConfirmDialogSwitch) == 1) {
 			document.getElementById("OBJID_SWITCH_CONFIRM_DIALOG")?.click();
 		}

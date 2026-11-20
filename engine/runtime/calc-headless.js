@@ -22,6 +22,7 @@ import { ExtractModelFromDom, HydrateFromModel } from "../status/stallcalc-hydra
 import { StAllCalcCore } from "../status/stallcalc.js";
 import { ComputeBattleResult } from "../battle/battlecalc.js";
 import { register } from "./engine-registry.js";
+import { SetEquippedSPMemo } from "../status/equipped-sp.js";
 
 /**
  * モデルからダメージ計算結果を得る（DOM読み書きゼロ）。
@@ -30,7 +31,13 @@ import { register } from "./engine-registry.js";
  */
 export function calcFromModel(model) {
     const { attackMethodConfArray } = HydrateFromModel(model);
-    const retValArray = StAllCalcCore(model.status.speedPot, attackMethodConfArray);
+    let retValArray;
+    if (useSpMemo) SetEquippedSPMemo(true);
+    try {
+        retValArray = StAllCalcCore(model.status.speedPot, attackMethodConfArray);
+    } finally {
+        if (useSpMemo) SetEquippedSPMemo(false);
+    }
     const { battleCalcResultAll } = ComputeBattleResult(retValArray);
     return battleCalcResultAll;
 }
@@ -44,10 +51,21 @@ export function calcFromModel(model) {
  */
 export function calcCoreFromModel(model) {
     const { attackMethodConfArray } = HydrateFromModel(model);
-    const [charaData, specData, mobData, retAttackMethodConfArray, coreOutput] =
-        StAllCalcCore(model.status.speedPot, attackMethodConfArray);
+    let charaData, specData, mobData, retAttackMethodConfArray, coreOutput;
+    // BuildFinder: 装備ＳＰの集計結果をこの計算の間だけ覚えておく（equipped-sp.js）
+    if (useSpMemo) SetEquippedSPMemo(true);
+    try {
+        [charaData, specData, mobData, retAttackMethodConfArray, coreOutput] =
+            StAllCalcCore(model.status.speedPot, attackMethodConfArray);
+    } finally {
+        if (useSpMemo) SetEquippedSPMemo(false);
+    }
     return { charaData, specData, mobData, attackMethodConfArray: retAttackMethodConfArray, coreOutput };
 }
+
+let useSpMemo = true;
+/** 検証用: 装備ＳＰの集計の覚えおきを使うか */
+export function setUseSpMemo(on) { useSpMemo = !!on; }
 
 register('calcFromModel', calcFromModel);
 register('calcCoreFromModel', calcCoreFromModel);

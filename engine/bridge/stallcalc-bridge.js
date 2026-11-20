@@ -45,4 +45,18 @@ export function EquipNumSearchFurubitaHead(...a) { return _reg.EquipNumSearchFur
 export function EquipNumSearchFurubitaSet(...a) { return _reg.EquipNumSearchFurubitaSet?.(...a); }
 export function ROUNDDOWN(...a) { return _reg.ROUNDDOWN?.(...a); }
 export function Init(...a) { return _reg.Init?.(...a); }
-export function StAllCalc(...a) { return _reg.StAllCalc?.(...a); }
+// 画面の読み込み中など、全計算を何度も走らせたくないとき用。止めている間の呼び出しは直前の結果を返し、
+// 解除時に1回だけ計算し直す（読み込み中の後ろの処理が計算結果を読むので、最初の1回だけは通す）
+let _deferStAllCalc = false, _pendingStAllCalc = false, _firstStAllCalc = false, _lastStAllCalc;
+export function deferStAllCalc(on) {
+	_deferStAllCalc = !!on;
+	_firstStAllCalc = !!on;
+	if (!on && _pendingStAllCalc) { _pendingStAllCalc = false; return _lastStAllCalc = _reg.StAllCalc?.(); }
+}
+export function StAllCalc(...a) {
+	if (_deferStAllCalc) {
+		if (_firstStAllCalc) _firstStAllCalc = false;
+		else { _pendingStAllCalc = true; return _lastStAllCalc; }
+	}
+	return _lastStAllCalc = _reg.StAllCalc?.(...a);
+}

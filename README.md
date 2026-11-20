@@ -8,8 +8,8 @@ ROラトリオHUBは有志の個人による制作物ですが、ROラトリオH
 そのため [ラグナロクオンライン著作物利用ガイドライン](https://ragnarokonline.gungho.jp/support/play-manner/copyright.html) に示された著作物の利用許諾事項にしたがって以下の権利表記を示します。
 
 ```
-© Gravity Co., Ltd. & Lee MyoungJin(studio DTDS). All rights reserved.
-© GungHo Online Entertainment, Inc. All Rights Reserved.
+Ⓒ Gravity Co., Ltd. & Lee MyoungJin(studio DTDS). All Rights Reserved.
+Published by GungHo Online Entertainment, Inc.
 当コンテンツの再利用（再転載・配布など）は、禁止しています。
 ```
 
