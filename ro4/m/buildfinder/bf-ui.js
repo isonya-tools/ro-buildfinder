@@ -320,6 +320,9 @@ function section(title, body) {
 
 function licenseNote() {
 	return h("p", { class: "bf-license" },
+		"Ⓒ Gravity Co., Ltd. & Lee MyoungJin(studio DTDS). All Rights Reserved.", h("br"),
+		"Published by GungHo Online Entertainment, Inc.", h("br"),
+		"当コンテンツの再利用（再転載・配布など）は、禁止しています。", h("br"),
 		"RO装備シミュレーター は ",
 		h("a", { href: "https://github.com/roratorio-hub/ratorio", target: "_blank", rel: "noopener" }, "ラトリオHUB"),
 		" の計算部分を使って作った非公式ツールです（非営利）。謝辞・著作権表示は ",
