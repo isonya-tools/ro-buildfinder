@@ -1,0 +1,122 @@
+[
+ {
+  "item_variant": "クロノアルケミア[0]",
+  "item_name_in_data": "クロノアルケミア",
+  "item_exists": false,
+  "items_index": null,
+  "new_rec_local_index": 0,
+  "rec_index_if_appended": 1287,
+  "sys": "スペシャルエンチャント",
+  "grp": "NPCタロー グループ2"
+ },
+ {
+  "item_variant": "クロノアルケミア[1]",
+  "item_name_in_data": "クロノアルケミア",
+  "item_exists": false,
+  "items_index": null,
+  "new_rec_local_index": 1,
+  "rec_index_if_appended": 1288,
+  "sys": "スペシャルエンチャント",
+  "grp": "NPCタロー グループ3"
+ },
+ {
+  "item_variant": "ヴィクトール・カエリ・アウラ[1]",
+  "item_name_in_data": "ヴィクトール・カエリ・アウラ",
+  "item_exists": false,
+  "items_index": null,
+  "new_rec_local_index": 2,
+  "rec_index_if_appended": 1289,
+  "sys": "スペシャルエンチャント",
+  "grp": "グループ1"
+ },
+ {
+  "item_variant": "トリニティサーベラス[1]",
+  "item_name_in_data": "トリニティサーベラス",
+  "item_exists": false,
+  "items_index": null,
+  "new_rec_local_index": 3,
+  "rec_index_if_appended": 1290,
+  "sys": "スペシャルエンチャント",
+  "grp": "グループ3"
+ },
+ {
+  "item_variant": "レイディアントアビスグリーブ[1]",
+  "item_name_in_data": "レイディアントアビスグリーブ",
+  "item_exists": false,
+  "items_index": null,
+  "new_rec_local_index": 4,
+  "rec_index_if_appended": 1291,
+  "sys": "スペシャルエンチャント",
+  "grp": "グループ3"
+ },
+ {
+  "item_variant": "アウェイキング・グリモワール[0]",
+  "item_name_in_data": "アウェイキング・グリモワール",
+  "item_exists": false,
+  "items_index": null,
+  "new_rec_local_index": 5,
+  "rec_index_if_appended": 1292,
+  "sys": "スペシャルエンチャント",
+  "grp": "ヤマカケ グループ1"
+ },
+ {
+  "item_variant": "アウェイキング・グリモワール[0]",
+  "item_name_in_data": "アウェイキング・グリモワール",
+  "item_exists": false,
+  "items_index": null,
+  "new_rec_local_index": 6,
+  "rec_index_if_appended": 1293,
+  "sys": "スペシャルエンチャント",
+  "grp": "ヤマカケ グループ2"
+ },
+ {
+  "item_variant": "クロノアルケミア[1]",
+  "item_name_in_data": "クロノアルケミア",
+  "item_exists": false,
+  "items_index": null,
+  "new_rec_local_index": 7,
+  "rec_index_if_appended": 1294,
+  "sys": "ファロスエンチャント",
+  "grp": "ベテラン遺物細工師"
+ },
+ {
+  "item_variant": "[シャドウ] ディファレントイヤリング",
+  "item_name_in_data": "[シャドウ] ディファレントイヤリング",
+  "item_exists": false,
+  "items_index": null,
+  "new_rec_local_index": 8,
+  "rec_index_if_appended": 1295,
+  "sys": "シーズンエンチャント",
+  "grp": "グループ12"
+ },
+ {
+  "item_variant": "[シャドウ] ディファレントペンダント",
+  "item_name_in_data": "[シャドウ] ディファレントペンダント",
+  "item_exists": false,
+  "items_index": null,
+  "new_rec_local_index": 9,
+  "rec_index_if_appended": 1296,
+  "sys": "シーズンエンチャント",
+  "grp": "グループ12"
+ },
+ {
+  "item_variant": "[シャドウ] シーズナルイヤリング",
+  "item_name_in_data": "[シャドウ] シーズナルイヤリング",
+  "item_exists": true,
+  "items_index": 865,
+  "new_rec_local_index": 10,
+  "rec_index_if_appended": 1297,
+  "sys": "シーズナルシャドウエンチャント",
+  "grp": "グループ6"
+ },
+ {
+  "item_variant": "[シャドウ] シーズナルペンダント",
+  "item_name_in_data": "[シャドウ] シーズナルペンダント",
+  "item_exists": true,
+  "items_index": 869,
+  "new_rec_local_index": 11,
+  "rec_index_if_appended": 1298,
+  "sys": "シーズナルシャドウエンチャント",
+  "grp": "グループ6"
+ }
+]
