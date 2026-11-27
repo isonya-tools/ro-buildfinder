@@ -230,6 +230,16 @@ function descText(kind, id) {
 	const t = isEnchant(id) ? d.e[id] : d.c[id];
 	return t ? { text: t } : { text: generatedDesc("card", id), gen: true };
 }
+// [名前]・「名前」の途中では折り返さない(文字列を、折り返さない span と文字列の並びにする)
+function nwNodes(s) {
+	const out = []; let last = 0;
+	for (const m of String(s).matchAll(/\[[^\[\]\n]{1,40}\](?:\s?Lv\s?\d+)?|「[^」\n]{1,24}」/g)) {
+		if (m.index > last) out.push(s.slice(last, m.index));
+		out.push(h("span", { class: "bf-nw" }, m[0])); last = m.index + m[0].length;
+	}
+	if (last < s.length) out.push(s.slice(last));
+	return out;
+}
 function descTip(kind, id) {
 	const { text, gen } = descText(kind, id);
 	const box = h("div", { class: "bf-desc" }, h("div", { class: "bf-tip-title" }, kind === "item" ? itemName(id) : cardName(id)));
@@ -238,8 +248,8 @@ function descTip(kind, id) {
 		if (!line || line === "\x06") continue;
 		if (line.startsWith("\x05")) { box.append(h("div", { class: "bf-tip-note bf-desc-intro" }, line.slice(1))); continue; }
 		const mm = line.match(/^\x02(.*?)\x03\s*(.*)$/);
-		if (mm) box.append(h("div", { class: "bf-desc-cond" }, h("b", {}, mm[1].replace(/：$/, "")), ...(mm[2] ? mm[2].split(" ／ ").map((x) => h("div", { class: "bf-desc-ef" }, x)) : [])));
-		else box.append(h("div", { class: "bf-desc-ln" }, line));
+		if (mm) box.append(h("div", { class: "bf-desc-cond" }, h("b", {}, ...nwNodes(mm[1].replace(/：$/, ""))), ...(mm[2] ? mm[2].split(" ／ ").map((x) => h("div", { class: "bf-desc-ef" }, ...nwNodes(x))) : [])));
+		else box.append(h("div", { class: "bf-desc-ln" }, ...nwNodes(line)));
 	}
 	if (!body.trim()) box.append(h("div", { class: "bf-tip-note" }, "説明なし"));
 	if (spec) box.append(h("div", { class: "bf-tip-note bf-desc-spec" }, spec));

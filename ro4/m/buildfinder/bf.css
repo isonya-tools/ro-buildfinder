@@ -195,6 +195,7 @@ font[color="red"], .red { color: var(--bf-ng) !important; }
 #BF_ROOT .bf-hasdesc { cursor: pointer; text-decoration: underline dotted var(--bf-dim); text-underline-offset: 3px; }
 .bf-desc { white-space: normal; }
 .bf-desc-ln { padding-left: 1em; text-indent: -1em; }
+.bf-nw { white-space: nowrap; }
 .bf-desc-cond { margin: 3px 0; }
 .bf-desc-cond > b { display: block; color: var(--bf-accent2); font-weight: bold; }
 .bf-desc-ef { padding-left: 1em; }
