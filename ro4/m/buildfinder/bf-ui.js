@@ -278,6 +278,14 @@ function showTip(e, content) {
 	if (!tip) { tip = h("div", { class: "bf-tip" }); document.body.append(tip); }
 	tip.replaceChildren(content);
 	tip.style.display = "block";
+	// 画面の高さに収める: 高すぎれば幅を広げて段組みにし、それでも高ければ文字を小さくする(スクロールは出さない)
+	tip.style.maxWidth = ""; tip.style.columns = ""; tip.style.fontSize = "";
+	const maxH = innerHeight - 16;
+	for (const c of [2, 3]) {
+		if (tip.offsetHeight <= maxH) break;
+		tip.style.maxWidth = Math.min(c === 2 ? 1000 : 1300, innerWidth - 16) + "px"; tip.style.columns = String(c); tip.style.columnGap = "20px";
+	}
+	for (let f = 12; f >= 8 && tip.offsetHeight > maxH; f--) tip.style.fontSize = f + "px";
 	const pad = 14, w = tip.offsetWidth, ht = tip.offsetHeight;
 	let x = e.clientX + pad, y = e.clientY + pad;
 	if (x + w > innerWidth - 8) x = Math.max(8, e.clientX - w - pad);
