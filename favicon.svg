@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <path d="M44 18c10-6 19 0 18 11-1 9-7 15-5 24-7-4-9-12-8-19 1-5-1-9-5-11z" fill="#2b2533" stroke="#120e18" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M52 24c2 5 0 10 0 16" fill="none" stroke="#4a4058" stroke-width="1.6" stroke-linecap="round"/>
+  <path d="M9 26 6 8l15 9z" fill="#2b2533" stroke="#120e18" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M47 26 50 8l-15 9z" fill="#2b2533" stroke="#120e18" stroke-width="2" stroke-linejoin="round"/>
+  <ellipse cx="28" cy="40" rx="22" ry="19" fill="#fff1e2" stroke="#120e18" stroke-width="2"/>
+  <path d="M6.5 36C7 25 16 20 28 20s21 5 21.5 16c-4-3-6-5-7-8-2 4-6 6-10 7 1-3 1-5 0-7-3 5-9 8-15 8 2-2 3-4 3-6-4 3-8 6-14 6z" fill="#2b2533" stroke="#120e18" stroke-width="2" stroke-linejoin="round"/>
+  <ellipse cx="19" cy="43" rx="3.6" ry="4.6" fill="#3a2a1a"/>
+  <ellipse cx="37" cy="43" rx="3.6" ry="4.6" fill="#3a2a1a"/>
+  <circle cx="20.2" cy="41.2" r="1.4" fill="#fff"/>
+  <circle cx="38.2" cy="41.2" r="1.4" fill="#fff"/>
+  <ellipse cx="13" cy="50" rx="3.5" ry="2" fill="#f59aa8" opacity=".8"/>
+  <ellipse cx="43" cy="50" rx="3.5" ry="2" fill="#f59aa8" opacity=".8"/>
+  <path d="M24 50q2 2.5 4 0q2 2.5 4 0" fill="none" stroke="#3a2a1a" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <g transform="">
+  <path d="M17 22 15 8l4 3 2-5 3 4 3-6 3 5 3-4 2 5 4-3-2 15z" fill="#7a4a2c" stroke="#2a1608" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M20 12l1 8M33 11l-1 9" stroke="#5a3420" stroke-width="1.2" stroke-linecap="round"/>
+  <path d="M16.5 18h23l-.5 4h-22z" fill="#3a2214" stroke="#2a1608" stroke-width="1.4" stroke-linejoin="round"/>
+  <path d="M28 18.2v3.6M26.2 20h3.6" stroke="#f59aa8" stroke-width="1.4" stroke-linecap="round"/>
+  <ellipse cx="28" cy="23.5" rx="23" ry="4.2" fill="#7a4a2c" stroke="#2a1608" stroke-width="2"/>
+  <path d="M8 23q20 3 40 0" fill="none" stroke="#9a6440" stroke-width="1.2" stroke-linecap="round"/>
+  <path d="M38 19c3-2 6-1 7 1-2 1-4 2-7 1z" fill="#e85a7a" stroke="#6a1020" stroke-width="1.4" stroke-linejoin="round"/>
+  <path d="M41 20c3 2 6 1 9 4-1 3-3 6-2 10-3-2-5-5-5-8-1 2-3 3-5 3 2-3 3-6 3-9z" fill="#e85a7a" stroke="#6a1020" stroke-width="1.4" stroke-linejoin="round"/>
+  <path d="M44 23c1 2 1 5 0 7" fill="none" stroke="#f7a0b4" stroke-width="1" stroke-linecap="round"/>
+  </g>
+</svg>

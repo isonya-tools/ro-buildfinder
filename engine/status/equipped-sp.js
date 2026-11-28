@@ -72,6 +72,85 @@ import {
 } from "../runtime/roro-state.js";
 import { ITEM_SP_TIME_OBJ } from "../equip/timeitem.dat.js";
 
+/*
+ * BuildFinder: 1回の計算の中で同じＳＰを何度も集計し直すのが計算時間の大半なので、
+ * calcCoreFromModel の間だけ結果を覚えておく（装備・カード・精錬値などは計算中に変わらない前提。
+ * 画面の通常の計算では使わない）。
+ */
+let spMemoOn = false;
+const spMemoMap = new Map();
+export function SetEquippedSPMemo(on) {
+	spMemoOn = !!on;
+	spMemoMap.clear();
+	spRegionIndex.clear();
+}
+/*
+ * BuildFinder: 計算中（spMemoOn の間）は、ＳＰＩＤごとに「その定義を持つ部位」を一度だけ調べて覚え、
+ * 他の部位はループで見ない（kind: "C"=カード, "E"=装備。値は部位番号の集合、null は全部位を見る）。
+ */
+const spRegionIndex = new Map();
+function spRegionsOf(kind, spid) {
+	let idx = spRegionIndex.get(kind);
+	if (!idx) {
+		idx = { by: new Map(), all: new Set() };
+		const list = kind === "C" ? n_A_card : n_A_Equip;
+		for (let rid = 0; rid < list.length; rid++) {
+			const data = kind === "C" ? CardObjNew[list[rid]] : ItemObjNew[list[rid]];
+			if (!data) continue;
+			const begin = kind === "C" ? CARD_DATA_INDEX_SPBEGIN : ITEM_DATA_INDEX_SPBEGIN;
+			const end = kind === "C" ? 0 : ITEM_SP_END;
+			for (let i = 0; data[begin + i] != end; i += 2) {
+				const k = spKeyOf(data[begin + i], kind === "C" ? 3 : 2);
+				if (k === null) { idx.all.add(rid); continue; }
+				let set = idx.by.get(k);
+				if (!set) idx.by.set(k, set = new Set());
+				set.add(rid);
+			}
+		}
+		spRegionIndex.set(kind, idx);
+	}
+	const set = idx.by.get(Number(spid));
+	return (rid) => idx.all.has(rid) || (set ? set.has(rid) : false);
+}
+function spMemo(key, fn) {
+	let v = spMemoMap.get(key);
+	if (v === undefined) {
+		v = fn();
+		spMemoMap.set(key, v);
+	}
+	return Array.isArray(v) ? v.slice() : v;
+}
+
+/*
+ * BuildFinder: ＳＰ定義の値から「一致判定で比べるＳＰＩＤ」を先に求めて覚えておき、
+ * 探しているＳＰＩＤと違う定義は条件の検査（BigInt の計算が重い）をせずに飛ばす。
+ * 求め方は各ループの一致判定までの処理と同じ（mode: 1=装備部位条件あり, 2=超越条件あり）。
+ * 途中で計算できない値は null（飛ばさず、従来どおり検査する）。
+ */
+const spKeyMemo = [new Map(), new Map(), new Map(), new Map()];
+function spKeyOf(raw, mode) {
+	const memo = spKeyMemo[mode];
+	let k = memo.get(raw);
+	if (k !== undefined) return k;
+	try {
+		let s = raw;
+		const p30 = toSafeBigInt(ITEM_SP_PURE_STR_BY_30_OFFSET);
+		if (s > p30) s = parseInt(s % p30);
+		if (mode & 1) {
+			const loc = toSafeBigInt(ITEM_SP_EQUIPMENT_LOCATION_BODY);
+			if (s >= loc) s = parseInt(s % loc);
+		}
+		if (mode & 2) {
+			const tr = toSafeBigInt(ITEM_SP_TRANSCENDENCE_1);
+			if (s >= tr) s = parseInt(s % tr);
+		}
+		k = s % ITEM_SP_REFINE_BY_1_OFFSET;
+		if (typeof k !== "number") k = null;
+	} catch { k = null; }
+	memo.set(raw, k);
+	return k;
+}
+
 /**
  * 装備中のＳＰの合計値を取得する（装備のみ）.
  * @param spid ＳＰのＩＤ
@@ -146,6 +225,11 @@ export function GetEquippedSPValueArrayEquip(spid) {
  * @return 当該ＳＰのパラメタ合計値
  */
 export function GetEquippedSPSubEquip(spid, invalidItemIdArray, bListUp, bExact) {
+	if (!spMemoOn) return GetEquippedSPSubEquipImpl(spid, invalidItemIdArray, bListUp, bExact);
+	return spMemo("E" + spid + "|" + (invalidItemIdArray ? invalidItemIdArray.join(",") : "") + "|" + (bListUp ? 1 : 0) + (bExact ? 1 : 0),
+		() => GetEquippedSPSubEquipImpl(spid, invalidItemIdArray, bListUp, bExact));
+}
+function GetEquippedSPSubEquipImpl(spid, invalidItemIdArray, bListUp, bExact) {
 
 	var eqpRegionId = 0;
 	var spDefIdx = 0;
@@ -173,8 +257,10 @@ export function GetEquippedSPSubEquip(spid, invalidItemIdArray, bListUp, bExact)
 	var listUpArray = new Array();
 
 
+	const hasSp = spMemoOn ? spRegionsOf("E", spid) : null;
 	// 全ての装備箇所をループ
 	for(eqpRegionId = 0; eqpRegionId < n_A_Equip.length; eqpRegionId++) {
+		if (hasSp && !hasSp(eqpRegionId)) continue;
 
 		// 装備データからアイテムデータを取得
 		itemId = n_A_Equip[eqpRegionId];
@@ -233,6 +319,7 @@ export function GetEquippedSPSubEquip(spid, invalidItemIdArray, bListUp, bExact)
 
 		// アイテムのＳＰ定義をループ検索
 		for (spDefIdx = 0; itemData[ ITEM_DATA_INDEX_SPBEGIN + spDefIdx ] != ITEM_SP_END; spDefIdx += 2) {
+			{ const k = spKeyOf(itemData[ ITEM_DATA_INDEX_SPBEGIN + spDefIdx ], 2); if (k !== null && k != spid) continue; }
 			var spDefPureStatusBy = 0;	// 純粋なステータスが上がる度に条件
 			var spValPureStatus = 0;	// 純粋なステータスによる上昇量
 
@@ -456,6 +543,7 @@ export function GetEquippedSPSubShadow(spid, invalidItemIdArray, bListUp, bExact
 
 		// アイテムのＳＰ定義をループ検索
 		for (spDefIdx = 0; itemData[ ITEM_DATA_INDEX_SPBEGIN + spDefIdx ] != ITEM_SP_END; spDefIdx += 2) {
+			{ const k = spKeyOf(itemData[ ITEM_DATA_INDEX_SPBEGIN + spDefIdx ], 0); if (k !== null && k != spid) continue; }
 			var spDefPureStatusBy = 0;	// 純粋なステータスが上がる度に条件
 			var spValPureStatus = 0;	// 純粋なステータスによる上昇量
 
@@ -656,6 +744,11 @@ export function GetEquippedSPValueArrayCardAndElse(spid) {
  * @return 当該ＳＰのパラメタ合計値
  */
 export function GetEquippedSPSubSPCardAndElse(spid, invalidCardIdArray, bListUp) {
+	if (!spMemoOn) return GetEquippedSPSubSPCardAndElseImpl(spid, invalidCardIdArray, bListUp);
+	return spMemo("C" + spid + "|" + (invalidCardIdArray ? invalidCardIdArray.join(",") : "") + "|" + (bListUp ? 1 : 0),
+		() => GetEquippedSPSubSPCardAndElseImpl(spid, invalidCardIdArray, bListUp));
+}
+function GetEquippedSPSubSPCardAndElseImpl(spid, invalidCardIdArray, bListUp) {
 	var i = 0;
 	var idx = 0;
 	var j = 0;
@@ -680,8 +773,10 @@ export function GetEquippedSPSubSPCardAndElse(spid, invalidCardIdArray, bListUp)
 	var listUpArray = new Array();
 	var petFuncReturn = null;
 
+	const hasSp = spMemoOn ? spRegionsOf("C", spid) : null;
 	// 装備中のカードのＳＰの合計値を取得
 	for(cardRegionId = 0; cardRegionId < n_A_card.length; cardRegionId++) {
+		if (hasSp && !hasSp(cardRegionId)) continue;
 		// 装備中のカードデータから、カードデータを取得
 		cardId = n_A_card[cardRegionId];
 		cardData = CardObjNew[cardId];
@@ -795,6 +890,7 @@ export function GetEquippedSPSubSPCardAndElse(spid, invalidCardIdArray, bListUp)
 
 		// カードのＳＰ定義をループ検索
 		for(spDefIdx = 0; cardData[CARD_DATA_INDEX_SPBEGIN + spDefIdx] != 0; spDefIdx += 2) {
+			{ const k = spKeyOf(cardData[CARD_DATA_INDEX_SPBEGIN + spDefIdx], 3); if (k !== null && k != spid) continue; }
 			var spDefPureStatusBy = 0;	// 純粋なステータスが上がる度に条件
 			var spValPureStatus = 0;	// 純粋なステータスによる上昇量
 

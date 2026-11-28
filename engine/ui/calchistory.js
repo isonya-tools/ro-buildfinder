@@ -11,7 +11,9 @@ import { OnDomReady } from "../runtime/dom-ready.js";
 import { HtmlGetObjectCheckedById } from "../runtime/util.js";
 import { runWithLoadingIndicator } from "./loading-indicator.js";
 // Chart.js ESM（auto = 全チャートタイプ登録済みビルド）
-import Chart from 'https://cdn.jsdelivr.net/npm/chart.js@4.5.1/auto/+esm';
+// 読み込めなくても（CDN障害・ブロック時）画面全体を止めず、履歴グラフだけ無効にする
+let Chart = null;
+try { Chart = (await import('https://cdn.jsdelivr.net/npm/chart.js@4.5.1/auto/+esm')).default; } catch (e) { console.warn('Chart.js を読み込めませんでした（履歴グラフは使えません）', e); }
 
 /** 現在表示中の clip 履歴パネルの Chart.js インスタンス（CSaveController.js#encodeToURL が読む）。 */
 export let g_Chart;
@@ -319,7 +321,7 @@ function wireDocumentDelegates() {
 function destroyHistoryPanel() {
     const canvas = document.getElementById("history_graph");
     if (!canvas) return;
-    Chart.getChart(canvas)?.destroy();
+    Chart?.getChart(canvas)?.destroy();
     canvas.remove();
     document.getElementById("history_container")?.remove();
     document.getElementById("history_button")?.remove();
@@ -343,6 +345,7 @@ function destroyHistoryPanel() {
  *   （CSaveController.js#restoreChartDisplay が復元済みデータを渡す）。
  */
 export function buildHistoryPanel(restoredChartData = null) {
+    if (!Chart) return;
     const anchor = document.getElementById("OBJID_ATTACK_SETTING_BLOCK_MIG");
     if (!anchor || document.getElementById("history_graph")) return;
 
